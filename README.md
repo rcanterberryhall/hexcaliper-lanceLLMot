@@ -1,12 +1,13 @@
 # Hexcaliper — Self-Hosted AI Chat Workbench
 
-A self-hosted chat interface for local LLMs via [Ollama](https://ollama.com), with document RAG and automatic URL fetching. Runs entirely on your machine — no cloud API keys required.
+A self-hosted chat interface for local LLMs via [Ollama](https://ollama.com), with document RAG, automatic URL fetching, and autonomous web search. Runs entirely on your machine — no cloud API keys required.
 
 ## Features
 
 - **Multi-model chat** — switch between any model pulled into your local Ollama instance
 - **Persistent conversations** — history stored in a lightweight TinyDB JSON file
 - **Document RAG** — upload PDF, DOCX, TXT, or Markdown files; relevant chunks are retrieved and injected into context automatically
+- **Autonomous web search** — models that support tool calling (e.g. Qwen3, Qwen2.5, Mistral) automatically search DuckDuckGo when the question requires current information; a live "Searching the web…" indicator shows while results are fetched
 - **URL fetching** — paste a URL in your message and the page content is fetched and included as context
 - **Streaming responses** — tokens stream to the browser via Server-Sent Events
 - **Thinking model support** — extended reasoning tokens from DeepSeek-R1, QwQ, and similar models are displayed separately
@@ -16,12 +17,16 @@ A self-hosted chat interface for local LLMs via [Ollama](https://ollama.com), wi
 ## Architecture
 
 ```
-Browser (nginx :8080)
-  └── /api/* → FastAPI (uvicorn :8000)
-                 ├── Ollama  (host :11434)
-                 ├── ChromaDB  (./data/chroma)
-                 └── TinyDB    (./data/db.json)
+Browser
+  └── nginx (host :8080)
+        └── /api/* → FastAPI/uvicorn (host :8000)
+                       ├── Ollama       (host :11434)
+                       ├── DuckDuckGo   (web search, no key)
+                       ├── ChromaDB     (./data/chroma)
+                       └── TinyDB       (./data/db.json)
 ```
+
+Both containers run with `network_mode: host` so they bind directly to the host network — no Docker bridge or port-mapping required.
 
 | Component | Technology |
 |-----------|------------|
@@ -126,7 +131,7 @@ All tunables are set via environment variables in `docker-compose.yml`:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API endpoint |
+| `OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama API endpoint |
 | `DEFAULT_MODEL` | `llama3:8b` | Model selected on first load |
 | `MAX_INPUT_CHARS` | `20000` | Maximum characters per user message |
 | `REQUEST_TIMEOUT_SECONDS` | `120` | Ollama request timeout |
@@ -182,6 +187,19 @@ Running on Windows is possible in theory via WSL2 and Docker Desktop:
    If you do not need GPU monitoring, remove the `devices` block from `docker-compose.yml` entirely and skip the `libnvidia-ml.so.1` copy step.
 
 5. **Clone and run inside WSL2** — open your WSL2 terminal and follow the standard [Quickstart](#quickstart-ubuntu-24044-lts--tested) from there. Do not run `docker compose` from a Windows Command Prompt or PowerShell, as path handling differs.
+
+## Web search
+
+Web search is built in and requires no API key. When a tool-capable model (Qwen3, Qwen2.5, Mistral, and most models pulled after mid-2024) determines that a question needs current information, it invokes the `web_search` tool automatically. The API scrapes DuckDuckGo HTML results using `httpx` and `BeautifulSoup`, injects up to 5 snippets into context, then streams the grounded answer.
+
+Models that do not support tool calling (e.g. `llama3:8b`) fall back to a plain response with no search — no error is shown.
+
+**Recommended models for web search:**
+```bash
+ollama pull qwen3:8b          # best tool-calling support; also a thinking model
+ollama pull qwen2.5-coder:7b  # good for code + web search
+ollama pull mistral:7b        # solid general tool use
+```
 
 ## Cloudflare Access (optional)
 
