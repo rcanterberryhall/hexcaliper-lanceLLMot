@@ -43,7 +43,12 @@ input.addEventListener('keydown', (e) => {
 
 // ── DOM helpers ──────────────────────────────────────────────
 function scrollToBottom() {
-  chat.scrollTop = chat.scrollHeight;
+  // Only auto-scroll if the user is already near the bottom (within 80px).
+  // If they've scrolled up to read, leave them there.
+  const distanceFromBottom = chat.scrollHeight - chat.scrollTop - chat.clientHeight;
+  if (distanceFromBottom < 80) {
+    chat.scrollTop = chat.scrollHeight;
+  }
 }
 
 // ── Think section ─────────────────────────────────────────────
