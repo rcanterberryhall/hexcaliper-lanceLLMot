@@ -36,7 +36,7 @@ def chunk_text(text: str) -> list[str]:
 
 
 async def embed(text: str) -> list[float]:
-    async with httpx.AsyncClient(timeout=60.0) as client:
+    async with httpx.AsyncClient(timeout=120.0) as client:
         resp = await client.post(
             f"{OLLAMA_BASE_URL}/api/embeddings",
             json={"model": EMBED_MODEL, "prompt": text},

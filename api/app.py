@@ -64,7 +64,7 @@ async def summarize_document(text: str) -> str:
     """Generate a short summary of document text using the default model."""
     sample = text[:6000]
     try:
-        async with httpx.AsyncClient(timeout=60.0) as client:
+        async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(
                 f"{OLLAMA_BASE_URL}/api/chat",
                 json={
@@ -198,7 +198,8 @@ async def model_status(model: str = ""):
         resp.raise_for_status()
         running = resp.json().get("models", [])
         loaded = any(m.get("name") == model or m.get("model") == model for m in running)
-        return {"model": model, "loaded": loaded}
+        active = [m.get("name") or m.get("model") for m in running if m.get("name") != model and m.get("model") != model]
+        return {"model": model, "loaded": loaded, "active": active}
     except Exception:
         return {"model": model, "loaded": False}
 
@@ -371,8 +372,10 @@ async def upload_document(
 
     scope = f"conversation:{conversation_id}" if conversation_id else "global"
     doc_id = str(uuid.uuid4())
-    chunk_count, summary, notices = await asyncio.gather(
-        rag.ingest(doc_id, user_email, text, scope=scope),
+    # Ingest first so the embedding model finishes before the chat model is loaded for summarization.
+    # Running them concurrently forces Ollama to swap models repeatedly, causing timeouts.
+    chunk_count = await rag.ingest(doc_id, user_email, text, scope=scope)
+    summary, notices = await asyncio.gather(
         summarize_document(text),
         asyncio.to_thread(copyright_extract.extract, text),
     )

@@ -29,6 +29,8 @@ const errorBarDismiss = document.getElementById('error-bar-dismiss');
 
 let currentConvId = null;
 let abortController = null;
+let uploadInProgress = false;
+let gpuFastInterval = null;
 
 // ── Sidebar toggle ────────────────────────────────────────────
 sidebarToggle.addEventListener('click', () => {
@@ -311,9 +313,15 @@ async function _uploadDoc(file, listEl, conversationId) {
   placeholder.className = 'doc-item uploading';
   const pname = document.createElement('span');
   pname.className = 'doc-item-name';
-  pname.textContent = `⏳ ${file.name}`;
+  pname.textContent = `Uploading ${file.name}…`;
   placeholder.appendChild(pname);
   listEl.prepend(placeholder);
+
+  uploadInProgress = true;
+  modelDot.className = 'model-dot';
+  modelDotLabel.textContent = 'Busy…';
+  modelDotLabel.className = 'model-dot-label';
+  gpuFastInterval = setInterval(pollGpu, 500);
 
   try {
     const body = new FormData();
@@ -321,17 +329,35 @@ async function _uploadDoc(file, listEl, conversationId) {
     const url = conversationId
       ? `/api/documents?conversation_id=${conversationId}`
       : '/api/documents';
-    const res = await fetch(url, { method: 'POST', body });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(`Upload failed: ${err.detail || res.status}`);
-    }
+
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', url);
+      xhr.upload.addEventListener('load', () => {
+        pname.textContent = `Processing ${file.name}…`;
+      });
+      xhr.addEventListener('load', () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve();
+        } else {
+          let detail = xhr.status;
+          try { detail = JSON.parse(xhr.responseText).detail || detail; } catch (_) {}
+          reject(new Error(`Upload failed: ${detail}`));
+        }
+      });
+      xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
+      xhr.send(body);
+    });
   } catch (err) {
-    alert(`Upload error: ${err.message}`);
+    alert(err.message);
   } finally {
+    uploadInProgress = false;
+    clearInterval(gpuFastInterval);
+    gpuFastInterval = null;
     placeholder.remove();
-    if (conversationId) await fetchChatDocuments();
+    if (conversationId) await fetchChatDocuments(conversationId);
     else await fetchDocuments();
+    await pollModelStatus();
   }
 }
 
@@ -370,21 +396,24 @@ function setChatDocsVisible(visible) {
   chatDocList.hidden = !visible;
 }
 
-async function fetchChatDocuments() {
-  if (!currentConvId) return;
+async function fetchChatDocuments(convId = currentConvId) {
+  if (!convId) return;
   try {
-    const res = await fetch(`/api/documents?conversation_id=${currentConvId}`);
+    const res = await fetch(`/api/documents?conversation_id=${convId}`);
     if (!res.ok) return;
-    renderChatDocList(await res.json());
+    const docs = await res.json();
+    renderChatDocList(docs);
+    if (docs.length > 0) setChatDocsVisible(true);
   } catch (_) {}
 }
 
 function renderChatDocList(docs) {
   chatDocList.innerHTML = '';
   for (const doc of docs) {
+    const convId = currentConvId;
     chatDocList.appendChild(_makeDocItem(doc, async () => {
       await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
-      await fetchChatDocuments();
+      await fetchChatDocuments(convId);
     }));
   }
 }
@@ -558,13 +587,19 @@ errorBarDismiss.addEventListener('click', clearErrorBar);
 async function pollModelStatus() {
   const model = modelSel.value;
   if (!model) return;
+  if (uploadInProgress) return;
   try {
     const res = await fetch(`/api/model-status?model=${encodeURIComponent(model)}`);
     if (!res.ok) return;
-    const { loaded } = await res.json();
+    const { loaded, active } = await res.json();
     modelDot.className = 'model-dot ' + (loaded ? 'loaded' : 'unloaded');
     modelDotLabel.textContent = loaded ? 'Ready' : 'Not loaded';
     modelDotLabel.className = 'model-dot-label ' + (loaded ? 'loaded' : 'unloaded');
+    if (!loaded && active && active.length > 0) {
+      showErrorBar(`Ollama switched to ${active.join(', ')}`, 'info');
+    } else if (loaded) {
+      clearErrorBar();
+    }
   } catch (_) {
     modelDot.className = 'model-dot';
     modelDotLabel.textContent = 'Unknown';

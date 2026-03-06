@@ -263,7 +263,8 @@ body { display: block; }
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
-  overflow: hidden;
+  overflow-x: hidden;
+  overflow-y: auto;
   transition: width 0.2s ease;
 }
 
@@ -445,7 +446,7 @@ body { display: block; }
   overflow: hidden;
   text-overflow: ellipsis;
   font-size: 0.78rem;
-  color: var(--gold);
+  color: #22c55e;
 }
 
 .doc-item-delete {
@@ -523,7 +524,7 @@ body { display: block; }
 /* ── Copyright notice ───────────────────────────────────────── */
 .copyright-notice {
   font-size: 0.62rem;
-  color: var(--text-muted);
+  color: #ffffff;
   opacity: 0.6;
   margin: 6px 8px 0;
   line-height: 1.4;
@@ -688,6 +689,16 @@ body { display: block; }
 
 #error-bar[data-level="warning"] #error-bar-dismiss {
   color: #fcd34d;
+}
+
+#error-bar[data-level="info"] {
+  background: rgba(99, 102, 241, 0.12);
+  border-bottom-color: rgba(99, 102, 241, 0.35);
+  color: #a5b4fc;
+}
+
+#error-bar[data-level="info"] #error-bar-dismiss {
+  color: #a5b4fc;
 }
 
 #error-bar[hidden] { display: none; }
