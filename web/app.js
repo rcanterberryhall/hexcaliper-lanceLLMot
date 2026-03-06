@@ -74,14 +74,16 @@ function addMeta(inner, modelTag, sources) {
     meta.textContent = modelTag;
     inner.appendChild(meta);
   }
-  if (sources && (sources.doc_chunks > 0 || sources.urls.length > 0)) {
+  if (sources && (sources.doc_chunks > 0 || sources.urls.length > 0 || (sources.web_searches && sources.web_searches.length > 0))) {
     const badge = document.createElement('div');
     badge.className = 'context-badge';
     const parts = [];
     if (sources.doc_chunks > 0)
       parts.push(`📄 ${sources.doc_chunks} doc chunk${sources.doc_chunks > 1 ? 's' : ''}`);
     if (sources.urls.length > 0)
-      parts.push(`🌐 ${sources.urls.join(', ')}`);
+      parts.push(`🔗 ${sources.urls.join(', ')}`);
+    if (sources.web_searches && sources.web_searches.length > 0)
+      parts.push(`🔍 ${sources.web_searches.join(' · ')}`);
     badge.textContent = parts.join(' · ');
     inner.appendChild(badge);
   }
@@ -374,6 +376,7 @@ form.addEventListener('submit', async (e) => {
 
     const { bubble, inner } = createStreamingBubble();
     const { onThink, onToken } = makeThinkParser(inner, bubble);
+    let searchBadge = null;
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let sseBuffer = '';
@@ -391,10 +394,19 @@ form.addEventListener('submit', async (e) => {
         let evt;
         try { evt = JSON.parse(line.slice(6)); } catch (_) { continue; }
 
-        if (evt.type === 'think') {
+        if (evt.type === 'search') {
+          if (!searchBadge) {
+            searchBadge = document.createElement('div');
+            searchBadge.className = 'search-badge';
+            inner.insertBefore(searchBadge, bubble);
+          }
+          searchBadge.textContent = `Searching the web: "${evt.query}"…`;
+          scrollToBottom();
+        } else if (evt.type === 'think') {
           onThink(evt.content);
           scrollToBottom();
         } else if (evt.type === 'token') {
+          if (searchBadge) { searchBadge.remove(); searchBadge = null; }
           onToken(evt.content);
           scrollToBottom();
         } else if (evt.type === 'error') {

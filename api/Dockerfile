@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 COPY libnvidia-ml.so.1 /usr/local/lib/libnvidia-ml.so.1
-COPY app.py rag.py web_fetch.py .
+COPY app.py rag.py web_fetch.py web_search.py .
 
 EXPOSE 8000
 

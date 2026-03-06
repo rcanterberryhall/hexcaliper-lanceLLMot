@@ -11,6 +11,7 @@ import pypdf
 import docx as python_docx
 import rag
 import web_fetch
+import web_search
 from fastapi import FastAPI, File, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import Response, StreamingResponse
@@ -87,6 +88,28 @@ class ChatResponse(BaseModel):
     reply: str
     conversation_id: str
     sources: dict
+
+
+# ── Web-search tool definition for Ollama tool-calling ────────
+
+WEB_SEARCH_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "web_search",
+        "description": (
+            "Search the web for current information, recent events, news, prices, "
+            "or anything that may not be in the model's training data. "
+            "Use this whenever the user's question likely requires up-to-date facts."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "The search query"},
+            },
+            "required": ["query"],
+        },
+    },
+}
 
 
 # ── GPU stats ─────────────────────────────────────────────────
@@ -357,34 +380,100 @@ async def chat(req: ChatRequest, request: Request):
 
     async def generate():
         reply_parts: list[str] = []
+        search_queries: list[str] = []
+
+        async def _stream_ollama(client: httpx.AsyncClient, pl: dict):
+            """Yield (chunk_dict, line) from an Ollama streaming call."""
+            async with client.stream("POST", f"{OLLAMA_BASE_URL}/api/chat", json=pl) as resp:
+                if resp.status_code != 200:
+                    body = await resp.aread()
+                    yield {"_error": f"Ollama {resp.status_code}: {body[:200].decode()}"}
+                    return
+                async for line in resp.aiter_lines():
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
 
         try:
             async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
-                async with client.stream(
-                    "POST", f"{OLLAMA_BASE_URL}/api/chat", json=payload
-                ) as resp:
-                    if resp.status_code != 200:
-                        body = await resp.aread()
-                        yield _sse({"type": "error", "detail": f"Ollama {resp.status_code}: {body[:200].decode()}"})
-                        return
+                # ── First pass: offer web_search tool ─────────────────
+                first_payload = {**payload, "tools": [WEB_SEARCH_TOOL]}
+                tool_calls_received: list[dict] = []
+                first_content: list[str] = []
 
-                    async for line in resp.aiter_lines():
-                        if not line:
-                            continue
-                        try:
-                            chunk = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
+                async for chunk in _stream_ollama(client, first_payload):
+                    if "_error" in chunk:
+                        # Model doesn't support tools — retry without them
+                        if "does not support tools" in chunk["_error"]:
+                            async for chunk2 in _stream_ollama(client, payload):
+                                if "_error" in chunk2:
+                                    yield _sse({"type": "error", "detail": chunk2["_error"]})
+                                    return
+                                msg2 = chunk2.get("message", {})
+                                if msg2.get("thinking"):
+                                    yield _sse({"type": "think", "content": msg2["thinking"]})
+                                token2 = msg2.get("content", "")
+                                if token2:
+                                    first_content.append(token2)
+                                    yield _sse({"type": "token", "content": token2})
+                                if chunk2.get("done"):
+                                    break
+                            break
+                        yield _sse({"type": "error", "detail": chunk["_error"]})
+                        return
+                    msg = chunk.get("message", {})
+                    if msg.get("thinking"):
+                        yield _sse({"type": "think", "content": msg["thinking"]})
+                    if msg.get("tool_calls"):
+                        tool_calls_received = msg["tool_calls"]
+                    token = msg.get("content", "")
+                    if token:
+                        first_content.append(token)
+                        yield _sse({"type": "token", "content": token})
+                    if chunk.get("done"):
+                        break
+
+                if tool_calls_received:
+                    # ── Tool-call branch: execute search, stream follow-up ─
+                    follow_up_messages = list(messages)
+                    follow_up_messages.append({
+                        "role": "assistant",
+                        "content": "",
+                        "tool_calls": tool_calls_received,
+                    })
+
+                    for tc in tool_calls_received:
+                        fn = tc.get("function", {})
+                        if fn.get("name") == "web_search":
+                            query = fn.get("arguments", {}).get("query", "")
+                            search_queries.append(query)
+                            yield _sse({"type": "search", "query": query})
+                            results = web_search.search(query)
+                            follow_up_messages.append({
+                                "role": "tool",
+                                "content": web_search.format_results(results),
+                            })
+
+                    second_payload = {**payload, "messages": follow_up_messages}
+                    async for chunk in _stream_ollama(client, second_payload):
+                        if "_error" in chunk:
+                            yield _sse({"type": "error", "detail": chunk["_error"]})
+                            return
                         msg = chunk.get("message", {})
-                        think_token = msg.get("thinking", "")
-                        if think_token:
-                            yield _sse({"type": "think", "content": think_token})
-                        content_token = msg.get("content", "")
-                        if content_token:
-                            reply_parts.append(content_token)
-                            yield _sse({"type": "token", "content": content_token})
+                        if msg.get("thinking"):
+                            yield _sse({"type": "think", "content": msg["thinking"]})
+                        token = msg.get("content", "")
+                        if token:
+                            reply_parts.append(token)
+                            yield _sse({"type": "token", "content": token})
                         if chunk.get("done"):
                             break
+                else:
+                    # No tool call — first pass content is the reply
+                    reply_parts = first_content
 
         except httpx.ConnectError:
             yield _sse({"type": "error", "detail": f"Cannot reach Ollama at {OLLAMA_BASE_URL}."})
@@ -411,6 +500,7 @@ async def chat(req: ChatRequest, request: Request):
                     update_fields["title"] = req.message[:60]
                 conversations_table.update(update_fields, Conv.id == conv_id)
 
+        sources["web_searches"] = search_queries
         yield _sse({"type": "done", "conversation_id": conv_id, "model": model, "sources": sources})
 
     return StreamingResponse(

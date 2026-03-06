@@ -8,6 +8,7 @@ EMBED_MODEL = os.environ.get("EMBED_MODEL", "nomic-embed-text")
 CHUNK_SIZE = 1000
 CHUNK_OVERLAP = 150
 TOP_K = 4
+DISTANCE_THRESHOLD = 0.45  # cosine distance; 0=identical, 1=unrelated
 
 _collection = None
 
@@ -69,8 +70,14 @@ async def search(user_email: str, query: str, top_k: int = TOP_K) -> list[str]:
             query_embeddings=[query_emb],
             n_results=top_k,
             where={"user_email": user_email},
+            include=["documents", "distances"],
         )
-        return results["documents"][0] if results["documents"] else []
+        if not results["documents"]:
+            return []
+        return [
+            doc for doc, dist in zip(results["documents"][0], results["distances"][0])
+            if dist < DISTANCE_THRESHOLD
+        ]
     except Exception:
         return []
 
