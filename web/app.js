@@ -9,8 +9,12 @@ const convList      = document.getElementById('conv-list');
 const newChatBtn    = document.getElementById('new-chat-btn');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebar       = document.getElementById('sidebar');
-const docList       = document.getElementById('doc-list');
-const docUpload     = document.getElementById('doc-upload');
+const docList           = document.getElementById('doc-list');
+const docUpload         = document.getElementById('doc-upload');
+const chatDocList       = document.getElementById('chat-doc-list');
+const chatDocUpload     = document.getElementById('chat-doc-upload');
+const chatDocsDivider   = document.getElementById('chat-docs-divider');
+const chatDocsHeader    = document.getElementById('chat-docs-header');
 const gpuMeter      = document.getElementById('gpu-meter');
 const gpuPct        = document.getElementById('gpu-pct');
 const gpuUtilBar    = document.getElementById('gpu-util-bar');
@@ -239,6 +243,8 @@ async function loadConversation(id) {
       createMessage(role, msg.content, role === 'ai' ? { modelTag: conv.model } : {});
     }
     setActiveConvItem(id);
+    setChatDocsVisible(true);
+    await fetchChatDocuments();
     input.focus();
   } catch (_) {}
 }
@@ -256,13 +262,69 @@ async function deleteConversation(id) {
 function newChat() {
   currentConvId = null;
   chat.innerHTML = '';
+  chatDocList.innerHTML = '';
   setActiveConvItem(null);
+  setChatDocsVisible(false);
   input.focus();
 }
 
 newChatBtn.addEventListener('click', newChat);
 
 // ── Documents ────────────────────────────────────────────────
+// ── Documents helpers ─────────────────────────────────────────
+
+function _makeDocItem(doc, onDelete) {
+  const item = document.createElement('div');
+  item.className = 'doc-item';
+  item.dataset.docId = doc.id;
+
+  const name = document.createElement('span');
+  name.className = 'doc-item-name';
+  name.textContent = doc.filename;
+  name.title = `${doc.filename} · ${doc.chunk_count} chunks`;
+
+  const del = document.createElement('button');
+  del.className = 'doc-item-delete';
+  del.textContent = '✕';
+  del.title = 'Delete document';
+  del.addEventListener('click', onDelete);
+
+  item.appendChild(name);
+  item.appendChild(del);
+  return item;
+}
+
+async function _uploadDoc(file, listEl, conversationId) {
+  const placeholder = document.createElement('div');
+  placeholder.className = 'doc-item uploading';
+  const pname = document.createElement('span');
+  pname.className = 'doc-item-name';
+  pname.textContent = `⏳ ${file.name}`;
+  placeholder.appendChild(pname);
+  listEl.prepend(placeholder);
+
+  try {
+    const body = new FormData();
+    body.append('file', file);
+    const url = conversationId
+      ? `/api/documents?conversation_id=${conversationId}`
+      : '/api/documents';
+    const res = await fetch(url, { method: 'POST', body });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`Upload failed: ${err.detail || res.status}`);
+    }
+  } catch (err) {
+    alert(`Upload error: ${err.message}`);
+  } finally {
+    placeholder.remove();
+    if (conversationId) await fetchChatDocuments();
+    else await fetchDocuments();
+  }
+}
+
+// ── Global documents ──────────────────────────────────────────
+
 async function fetchDocuments() {
   try {
     const res = await fetch('/api/documents');
@@ -274,62 +336,52 @@ async function fetchDocuments() {
 function renderDocList(docs) {
   docList.innerHTML = '';
   for (const doc of docs) {
-    const item = document.createElement('div');
-    item.className = 'doc-item';
-    item.dataset.docId = doc.id;
-
-    const name = document.createElement('span');
-    name.className = 'doc-item-name';
-    name.textContent = doc.filename;
-    name.title = `${doc.filename} · ${doc.chunk_count} chunks`;
-
-    const del = document.createElement('button');
-    del.className = 'doc-item-delete';
-    del.textContent = '✕';
-    del.title = 'Delete document';
-    del.addEventListener('click', async () => deleteDocument(doc.id));
-
-    item.appendChild(name);
-    item.appendChild(del);
-    docList.appendChild(item);
+    docList.appendChild(_makeDocItem(doc, async () => {
+      await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
+      await fetchDocuments();
+    }));
   }
-}
-
-async function deleteDocument(id) {
-  try {
-    const res = await fetch(`/api/documents/${id}`, { method: 'DELETE' });
-    if (res.status === 204 || res.ok) await fetchDocuments();
-  } catch (_) {}
 }
 
 docUpload.addEventListener('change', async () => {
   const file = docUpload.files[0];
   if (!file) return;
   docUpload.value = '';
+  await _uploadDoc(file, docList, null);
+});
 
-  // Show uploading placeholder
-  const placeholder = document.createElement('div');
-  placeholder.className = 'doc-item uploading';
-  const placeholderName = document.createElement('span');
-  placeholderName.className = 'doc-item-name';
-  placeholderName.textContent = `⏳ ${file.name}`;
-  placeholder.appendChild(placeholderName);
-  docList.prepend(placeholder);
+// ── Chat-scoped documents ─────────────────────────────────────
 
+function setChatDocsVisible(visible) {
+  chatDocsDivider.hidden = !visible;
+  chatDocsHeader.hidden = !visible;
+  chatDocList.hidden = !visible;
+}
+
+async function fetchChatDocuments() {
+  if (!currentConvId) return;
   try {
-    const body = new FormData();
-    body.append('file', file);
-    const res = await fetch('/api/documents', { method: 'POST', body });
-    if (!res.ok) {
-      const err = await res.json().catch(() => ({}));
-      alert(`Upload failed: ${err.detail || res.status}`);
-    }
-  } catch (err) {
-    alert(`Upload error: ${err.message}`);
-  } finally {
-    placeholder.remove();
-    await fetchDocuments();
+    const res = await fetch(`/api/documents?conversation_id=${currentConvId}`);
+    if (!res.ok) return;
+    renderChatDocList(await res.json());
+  } catch (_) {}
+}
+
+function renderChatDocList(docs) {
+  chatDocList.innerHTML = '';
+  for (const doc of docs) {
+    chatDocList.appendChild(_makeDocItem(doc, async () => {
+      await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
+      await fetchChatDocuments();
+    }));
   }
+}
+
+chatDocUpload.addEventListener('change', async () => {
+  const file = chatDocUpload.files[0];
+  if (!file || !currentConvId) return;
+  chatDocUpload.value = '';
+  await _uploadDoc(file, chatDocList, currentConvId);
 });
 
 // ── Send ─────────────────────────────────────────────────────
@@ -429,6 +481,8 @@ form.addEventListener('submit', async (e) => {
         currentConvId = doneData.conversation_id;
         await fetchConversations();
         setActiveConvItem(currentConvId);
+        setChatDocsVisible(true);
+        await fetchChatDocuments();
       }
     }
 

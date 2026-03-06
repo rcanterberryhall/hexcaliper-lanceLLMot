@@ -45,7 +45,7 @@ async def embed(text: str) -> list[float]:
     return resp.json()["embedding"]
 
 
-async def ingest(doc_id: str, user_email: str, text: str) -> int:
+async def ingest(doc_id: str, user_email: str, text: str, scope: str = "global") -> int:
     col = get_collection()
     chunks = chunk_text(text)
     if not chunks:
@@ -55,21 +55,61 @@ async def ingest(doc_id: str, user_email: str, text: str) -> int:
         ids=[f"{doc_id}__{i}" for i in range(len(chunks))],
         embeddings=embeddings,
         documents=chunks,
-        metadatas=[{"doc_id": doc_id, "user_email": user_email} for _ in chunks],
+        metadatas=[{"doc_id": doc_id, "user_email": user_email, "scope": scope} for _ in chunks],
     )
     return len(chunks)
 
 
-async def search(user_email: str, query: str, top_k: int = TOP_K) -> list[str]:
+def migrate_legacy_scopes() -> None:
+    """Tag any pre-scope ChromaDB chunks as 'global' (one-time, idempotent)."""
+    try:
+        col = get_collection()
+        results = col.get(include=["metadatas"])
+        ids_to_update, new_metas = [], []
+        for id_, meta in zip(results["ids"], results["metadatas"]):
+            if not meta.get("scope"):
+                ids_to_update.append(id_)
+                new_metas.append({**meta, "scope": "global"})
+        if ids_to_update:
+            col.update(ids=ids_to_update, metadatas=new_metas)
+    except Exception:
+        pass
+
+
+async def search(
+    user_email: str,
+    query: str,
+    top_k: int = TOP_K,
+    conversation_id: str | None = None,
+) -> list[str]:
     col = get_collection()
     if col.count() == 0:
         return []
     query_emb = await embed(query)
+
+    if conversation_id:
+        where: dict = {
+            "$and": [
+                {"user_email": {"$eq": user_email}},
+                {"$or": [
+                    {"scope": {"$eq": "global"}},
+                    {"scope": {"$eq": f"conversation:{conversation_id}"}},
+                ]},
+            ]
+        }
+    else:
+        where = {
+            "$and": [
+                {"user_email": {"$eq": user_email}},
+                {"scope": {"$eq": "global"}},
+            ]
+        }
+
     try:
         results = col.query(
             query_embeddings=[query_emb],
             n_results=top_k,
-            where={"user_email": user_email},
+            where=where,
             include=["documents", "distances"],
         )
         if not results["documents"]:

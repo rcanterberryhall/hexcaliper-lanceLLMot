@@ -29,6 +29,14 @@ conversations_table = db.table("conversations")
 documents_table = db.table("documents")
 db_lock = threading.Lock()
 
+# ── Startup migration ──────────────────────────────────────────
+# Tag pre-scope TinyDB docs and ChromaDB chunks as "global" (idempotent).
+_Doc = Query()
+with db_lock:
+    for _d in documents_table.search(~_Doc.scope.exists()):
+        documents_table.update({"scope": "global"}, _Doc.id == _d["id"])
+rag.migrate_legacy_scopes()
+
 app = FastAPI(title="Hexcaliper API", version="3.0.0")
 
 app.add_middleware(
@@ -233,17 +241,30 @@ async def delete_conversation(conv_id: str, request: Request):
         if docs[0]["user_email"] != user_email:
             raise HTTPException(status_code=403, detail="Access denied.")
         conversations_table.remove(Conv.id == conv_id)
+
+    # Delete any documents scoped to this conversation
+    scope = f"conversation:{conv_id}"
+    Doc = Query()
+    with db_lock:
+        scoped_docs = documents_table.search(Doc.scope == scope)
+        documents_table.remove(Doc.scope == scope)
+    for d in scoped_docs:
+        rag.delete_chunks(d["id"])
+
     return Response(status_code=204)
 
 
 # ── Documents ─────────────────────────────────────────────────
 
 @app.get("/documents")
-async def list_documents(request: Request):
+async def list_documents(request: Request, conversation_id: Optional[str] = None):
     user_email = get_user_email(request)
     Doc = Query()
+    scope = f"conversation:{conversation_id}" if conversation_id else "global"
     with db_lock:
-        docs = documents_table.search(Doc.user_email == user_email)
+        docs = documents_table.search(
+            (Doc.user_email == user_email) & (Doc.scope == scope)
+        )
     docs.sort(key=lambda d: d.get("created_at", ""), reverse=True)
     return [
         {
@@ -252,13 +273,18 @@ async def list_documents(request: Request):
             "size_bytes": d.get("size_bytes", 0),
             "chunk_count": d.get("chunk_count", 0),
             "created_at": d.get("created_at"),
+            "scope": d.get("scope", "global"),
         }
         for d in docs
     ]
 
 
 @app.post("/documents")
-async def upload_document(request: Request, file: UploadFile = File(...)):
+async def upload_document(
+    request: Request,
+    file: UploadFile = File(...),
+    conversation_id: Optional[str] = None,
+):
     user_email = get_user_email(request)
     data = await file.read()
 
@@ -270,8 +296,9 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
     if not text:
         raise HTTPException(status_code=422, detail="Could not extract text from file.")
 
+    scope = f"conversation:{conversation_id}" if conversation_id else "global"
     doc_id = str(uuid.uuid4())
-    chunk_count = await rag.ingest(doc_id, user_email, text)
+    chunk_count = await rag.ingest(doc_id, user_email, text, scope=scope)
 
     ts = now_iso()
     meta = {
@@ -281,6 +308,7 @@ async def upload_document(request: Request, file: UploadFile = File(...)):
         "size_bytes": len(data),
         "chunk_count": chunk_count,
         "created_at": ts,
+        "scope": scope,
     }
     with db_lock:
         documents_table.insert(meta)
@@ -347,7 +375,7 @@ async def chat(req: ChatRequest, request: Request):
         url_context = {}
 
     try:
-        doc_chunks = await rag.search(user_email, req.message)
+        doc_chunks = await rag.search(user_email, req.message, conversation_id=conv_id)
     except Exception:
         doc_chunks = []
 

@@ -19,13 +19,23 @@
       <div class="sidebar-divider"></div>
 
       <div class="sidebar-section-header">
-        <span>Documents</span>
+        <span>Global Documents</span>
         <label id="upload-label" title="Upload document (.pdf, .docx, .txt, .md)">
           +
           <input type="file" id="doc-upload" accept=".pdf,.docx,.txt,.md" hidden />
         </label>
       </div>
       <div id="doc-list" role="list"></div>
+
+      <div class="sidebar-divider" id="chat-docs-divider" hidden></div>
+      <div class="sidebar-section-header" id="chat-docs-header" hidden>
+        <span>Chat Documents</span>
+        <label id="chat-upload-label" title="Upload document for this chat only">
+          +
+          <input type="file" id="chat-doc-upload" accept=".pdf,.docx,.txt,.md" hidden />
+        </label>
+      </div>
+      <div id="chat-doc-list" role="list" hidden></div>
     </aside>
 
     <div id="main">
