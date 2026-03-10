@@ -45,7 +45,7 @@ app = FastAPI(title="Hexcaliper API", version="3.0.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:8080"],
-    allow_methods=["GET", "POST", "DELETE"],
+    allow_methods=["GET", "POST", "DELETE", "PATCH"],
     allow_headers=["Content-Type"],
 )
 
@@ -176,7 +176,7 @@ class ChatRequest(BaseModel):
     system: Optional[str] = None
     conversation_id: Optional[str] = None
 
-    @field_validator("message"))
+    @field_validator("message")
     @classmethod
     def message_not_empty(cls, v: str) -> str:
         """
@@ -569,6 +569,35 @@ async def delete_conversation(conv_id: str, request: Request):
     return Response(status_code=204)
 
 
+@app.patch("/conversations/{conv_id}")
+async def rename_conversation(conv_id: str, request: Request):
+    """
+    Rename a conversation by updating its title.
+
+    :param conv_id: The ID of the conversation to rename.
+    :type conv_id: str
+    :param request: The HTTP request containing a JSON body with a ``title`` key.
+    :type request: Request
+    :return: A dict with ``id`` and the new ``title``.
+    :rtype: dict
+    :raises HTTPException: 400 if title is missing/empty, 404 if not found, 403 if access denied.
+    """
+    user_email = get_user_email(request)
+    body = await request.json()
+    title = (body.get("title") or "").strip()
+    if not title:
+        raise HTTPException(status_code=400, detail="title is required")
+    Conv = Query()
+    with db_lock:
+        docs = conversations_table.search(Conv.id == conv_id)
+        if not docs:
+            raise HTTPException(status_code=404, detail="Conversation not found.")
+        if docs[0]["user_email"] != user_email:
+            raise HTTPException(status_code=403, detail="Access denied.")
+        conversations_table.update({"title": title, "updated_at": now_iso()}, Conv.id == conv_id)
+    return {"id": conv_id, "title": title}
+
+
 # ── Documents ─────────────────────────────────────────────────
 
 @app.get("/documents")
@@ -604,6 +633,7 @@ async def list_documents(request: Request, conversation_id: Optional[str] = None
             "chunk_count": d.get("chunk_count", 0),
             "created_at": d.get("created_at"),
             "scope": d.get("scope", "global"),
+            "summary": d.get("summary", ""),
         }
         for d in docs
     ]
@@ -882,6 +912,30 @@ async def chat(req: ChatRequest, request: Request):
         reply_parts: list[str] = []
         search_queries: list[str] = []
 
+        _saved = False
+
+        def _save_to_db(partial: bool = False) -> None:
+            """Persist accumulated reply to DB; idempotent via _saved flag."""
+            nonlocal _saved
+            if _saved:
+                return
+            text = "".join(reply_parts)
+            if not text:
+                return
+            _saved = True
+            suffix = " *(response interrupted)*" if partial else ""
+            ts_now = now_iso()
+            with db_lock:
+                rows = conversations_table.search(Conv.id == conv_id)
+                if rows:
+                    updated = list(rows[0].get("messages", []))
+                    updated.append({"role": "user", "content": req.message, "ts": ts_now})
+                    updated.append({"role": "assistant", "content": text + suffix, "ts": ts_now})
+                    update_fields = {"messages": updated, "updated_at": ts_now, "model": model}
+                    if not req.conversation_id:
+                        update_fields["title"] = req.message[:60]
+                    conversations_table.update(update_fields, Conv.id == conv_id)
+
         async def _stream_ollama(client: httpx.AsyncClient, pl: dict):
             """
             Streams data asynchronously from the Ollama chat API using the given HTTP client and payload.
@@ -988,6 +1042,10 @@ async def chat(req: ChatRequest, request: Request):
                     # No tool call — first pass content is the reply
                     reply_parts = first_content
 
+        except asyncio.CancelledError:
+            # Client disconnected mid-stream — persist whatever was received.
+            _save_to_db(partial=True)
+            return
         except httpx.ConnectError:
             yield _sse({"type": "error", "detail": f"Cannot reach Ollama at {OLLAMA_BASE_URL}."})
             return
@@ -1000,18 +1058,7 @@ async def chat(req: ChatRequest, request: Request):
             yield _sse({"type": "error", "detail": "Ollama returned an empty reply."})
             return
 
-        # Persist to DB
-        ts_now = now_iso()
-        with db_lock:
-            docs = conversations_table.search(Conv.id == conv_id)
-            if docs:
-                updated = list(docs[0].get("messages", []))
-                updated.append({"role": "user", "content": req.message, "ts": ts_now})
-                updated.append({"role": "assistant", "content": reply_text, "ts": ts_now})
-                update_fields = {"messages": updated, "updated_at": ts_now, "model": model}
-                if not req.conversation_id:
-                    update_fields["title"] = req.message[:60]
-                conversations_table.update(update_fields, Conv.id == conv_id)
+        _save_to_db(partial=False)
 
         sources["web_searches"] = search_queries
         yield _sse({"type": "done", "conversation_id": conv_id, "model": model, "sources": sources})

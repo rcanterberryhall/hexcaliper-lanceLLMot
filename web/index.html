@@ -1,4 +1,22 @@
 <!DOCTYPE html>
+<!--
+  index.html — Hexcaliper AI Chat
+
+  Top-level structure:
+    #app (flex row)
+    ├── <aside id="sidebar">     — collapsible left panel
+    │     ├── conversation list  — populated by fetchConversations()
+    │     ├── global doc list    — populated by fetchDocuments()
+    │     └── chat doc list      — populated by fetchChatDocuments(); hidden until a conversation is active
+    └── #main (flex column)
+          ├── <header>           — branding, GPU meter, model selector
+          ├── #error-bar         — dismissible notification banner (hidden by default)
+          ├── #chat              — scrollable message log; aria-live for screen readers
+          └── #composer          — textarea + send button
+
+  All dynamic content (messages, lists, status) is managed by app.js.
+  No inline scripts or styles — all logic lives in app.js / styles.css.
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
@@ -6,28 +24,37 @@
   <title>Hexcaliper — AI Chat</title>
   <link rel="icon" type="image/svg+xml" href="/assets/hexcaliper-crest.svg" />
   <link rel="stylesheet" href="/styles.css" />
+  <!-- highlight.js theme — atom-one-dark fits the navy/purple palette -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css" />
 </head>
 <body>
 
   <div id="app">
+
+    <!-- ── Sidebar ─────────────────────────────────────────────── -->
     <aside id="sidebar">
       <div class="sidebar-header">
         <button id="new-chat-btn">+ New Chat</button>
       </div>
+
+      <!-- Conversation history; items injected by renderConvList() -->
       <div id="conv-list" role="list"></div>
 
       <div class="sidebar-divider"></div>
 
+      <!-- Global documents — persist across all conversations -->
       <div class="sidebar-section-header">
         <span>Global Documents</span>
         <label id="upload-label" title="Upload document (.pdf, .docx, .txt, .md)">
           +
+          <!-- Hidden file input; triggered by clicking the label -->
           <input type="file" id="doc-upload" accept=".pdf,.docx,.xlsx,.txt,.md" hidden />
         </label>
       </div>
       <div id="doc-list" role="list"></div>
       <p class="copyright-notice">Documents may contain copyrighted material. You are responsible for ensuring your use complies with applicable licenses.</p>
 
+      <!-- Chat-scoped documents — hidden until a conversation is active -->
       <div class="sidebar-divider" id="chat-docs-divider" hidden></div>
       <div class="sidebar-section-header" id="chat-docs-header" hidden>
         <span>Chat Documents</span>
@@ -39,7 +66,10 @@
       <div id="chat-doc-list" role="list" hidden></div>
     </aside>
 
+    <!-- ── Main panel ──────────────────────────────────────────── -->
     <div id="main">
+
+      <!-- Header: branding, GPU stats, model controls -->
       <header>
         <button id="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
         <img src="/assets/hexcaliper-crest.svg" alt="Hexcaliper crest" />
@@ -47,6 +77,8 @@
           <h1>Hexcaliper</h1>
           <p>AI Workbench</p>
         </div>
+
+        <!-- GPU utilisation meter; hidden on mobile, faded when unavailable -->
         <div id="gpu-meter" title="">
           <div class="gpu-meter-row">
             <span class="gpu-meter-label">GPU</span>
@@ -59,6 +91,8 @@
             <span id="gpu-vram">-- VRAM</span>
           </div>
         </div>
+
+        <!-- Model selector with load-status dot and action buttons -->
         <div class="model-wrap">
           <label for="model-select">Model</label>
           <span id="model-dot" class="model-dot"></span>
@@ -70,13 +104,26 @@
           <button id="refresh-models-btn" class="icon-btn" title="Refresh model list / restart Ollama">↻</button>
         </div>
       </header>
+
+      <!-- Dismissible notification banner; data-level controls colour (error/warning/info) -->
       <div id="error-bar" hidden role="alert">
         <span id="error-bar-text"></span>
         <button id="error-bar-dismiss" aria-label="Dismiss">✕</button>
       </div>
 
+      <!-- Scrollable chat message log; aria-live announces new messages to screen readers -->
       <div id="chat" role="log" aria-live="polite" aria-label="Chat conversation"></div>
 
+      <!-- System prompt — hidden by default, toggled by the ⚙ button -->
+      <div id="system-prompt-wrap" hidden>
+        <textarea
+          id="system-prompt"
+          rows="2"
+          placeholder="System prompt (optional) — sets the AI's persona or constraints for this conversation…"
+        ></textarea>
+      </div>
+
+      <!-- Message composer: auto-resizing textarea, Enter to send (Shift+Enter for newline) -->
       <form id="composer" autocomplete="off">
         <textarea
           id="input"
@@ -84,11 +131,16 @@
           placeholder="Ask anything…"
           aria-label="Message input"
         ></textarea>
+        <button type="button" id="system-btn" class="icon-btn" title="Set system prompt">⚙</button>
         <button type="submit" id="send-btn">Send</button>
       </form>
+
     </div>
   </div>
 
+  <!-- marked (markdown→HTML) and highlight.js (code syntax) must load before app.js -->
+  <script src="https://cdn.jsdelivr.net/npm/marked@9/marked.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
