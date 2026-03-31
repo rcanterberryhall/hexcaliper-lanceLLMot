@@ -15,10 +15,7 @@ const chatDocList       = document.getElementById('chat-doc-list');
 const chatDocUpload     = document.getElementById('chat-doc-upload');
 const chatDocsDivider   = document.getElementById('chat-docs-divider');
 const chatDocsHeader    = document.getElementById('chat-docs-header');
-const gpuMeter      = document.getElementById('gpu-meter');
-const gpuPct        = document.getElementById('gpu-pct');
-const gpuUtilBar    = document.getElementById('gpu-util-bar');
-const gpuVram       = document.getElementById('gpu-vram');
+const gpuMeters     = document.getElementById('gpu-meters');
 const modelDot        = document.getElementById('model-dot');
 const modelDotLabel   = document.getElementById('model-dot-label');
 const loadModelBtn    = document.getElementById('load-model-btn');
@@ -545,7 +542,13 @@ function newChat() {
   input.focus();
 }
 
-newChatBtn.addEventListener('click', newChat);
+newChatBtn.addEventListener('click', () => {
+  newChat();
+  // Clear any workbench project context
+  delete chatView.dataset.projectId;
+  delete chatView.dataset.projectName;
+  input.placeholder = 'Ask anything…';
+});
 
 // ── Documents ────────────────────────────────────────────────
 // ── Documents helpers ─────────────────────────────────────────
@@ -578,7 +581,10 @@ function _makeDocItem(doc, onDelete) {
   del.className = 'doc-item-delete';
   del.textContent = '✕';
   del.title = 'Delete document';
-  del.addEventListener('click', onDelete);
+  del.addEventListener('click', async () => {
+    if (!confirm(`Delete "${doc.filename}"?\n\nThis removes it permanently from the knowledge graph.`)) return;
+    await onDelete();
+  });
 
   main.appendChild(name);
   main.appendChild(del);
@@ -795,6 +801,8 @@ form.addEventListener('submit', async (e) => {
     abortController = new AbortController();
     const body = { message, model };
     if (currentConvId) body.conversation_id = currentConvId;
+    const wbProjectId = chatView.dataset.projectId;
+    if (wbProjectId) body.project_id = wbProjectId;
     const systemPrompt = systemPromptInput.value.trim();
     if (systemPrompt) body.system = systemPrompt;
 
@@ -897,35 +905,96 @@ form.addEventListener('submit', async (e) => {
   }
 });
 
-// ── GPU meter ─────────────────────────────────────────────────
-/**
- * Polls the ``/api/gpu`` endpoint and updates the GPU meter widget.
- *
- * Updates GPU utilisation percentage, the colour-coded usage bar (green →
- * warm → hot), and the VRAM used/total readout.  Adds the ``unavailable``
- * class to the meter when the API returns an error or the GPU is not present.
- *
- * @return {Promise<void>}
- */
+// ── GPU meters ────────────────────────────────────────────────
+function _buildGpuMeter(i, label) {
+  const div = document.createElement('div');
+  div.className = 'gpu-meter';
+  div.id = `gpu-meter-${i}`;
+  div.innerHTML = `
+    <div class="gpu-meter-row">
+      <span class="gpu-meter-label">${label}</span>
+      <span class="gpu-pct" id="gpu-pct-${i}">--</span>
+    </div>
+    <div class="gpu-bar-wrap"><div id="gpu-bar-${i}" class="gpu-bar"></div></div>
+    <div class="gpu-meter-row"><span class="gpu-vram" id="gpu-vram-${i}">-- VRAM</span></div>`;
+  return div;
+}
+
 async function pollGpu() {
+  if (!gpuMeters) return;
   try {
     const res = await fetch('/api/gpu');
-    if (!res.ok) { gpuMeter.classList.add('unavailable'); return; }
+    if (!res.ok) { Array.from(gpuMeters.children).forEach(m => m.classList.add('unavailable')); return; }
     const d = await res.json();
-    if (!d.ok) { gpuMeter.classList.add('unavailable'); return; }
+    const noGpu = !d.ok || !d.gpus || d.gpus.length === 0;
+    if (noGpu) {
+      if (!gpuMeters.dataset.noGpu) {
+        gpuMeters.innerHTML = '';
+        gpuMeters.dataset.noGpu = '1';
+        const m = _buildGpuMeter(0, 'No GPU');
+        m.classList.add('unavailable');
+        gpuMeters.appendChild(m);
+      }
+      return;
+    }
+    delete gpuMeters.dataset.noGpu;
+    if (gpuMeters.children.length !== d.gpus.length) {
+      gpuMeters.innerHTML = '';
+      const multi = d.gpus.length > 1;
+      d.gpus.forEach((_, i) => gpuMeters.appendChild(_buildGpuMeter(i, multi ? `GPU ${i}` : 'GPU')));
+    }
+    d.gpus.forEach((g, i) => {
+      const meter = document.getElementById(`gpu-meter-${i}`);
+      if (!meter) return;
+      meter.classList.remove('unavailable');
+      meter.title = g.name || '';
+      document.getElementById(`gpu-pct-${i}`).textContent = `${g.gpu_util}%`;
+      const bar = document.getElementById(`gpu-bar-${i}`);
+      bar.style.width = `${g.gpu_util}%`;
+      bar.className = 'gpu-bar' + (g.gpu_util > 85 ? ' hot' : g.gpu_util > 55 ? ' warm' : '');
+      const used  = (g.mem_used  / 1073741824).toFixed(1);
+      const total = (g.mem_total / 1073741824).toFixed(1);
+      document.getElementById(`gpu-vram-${i}`).textContent = `${used}/${total} GB`;
+    });
+  } catch (_) {
+    Array.from(gpuMeters.children).forEach(m => m.classList.add('unavailable'));
+  }
+}
 
-    gpuMeter.classList.remove('unavailable');
-    gpuMeter.title = d.name || '';
-    gpuPct.textContent = `${d.gpu_util}%`;
-    gpuUtilBar.style.width = `${d.gpu_util}%`;
-    gpuUtilBar.className = 'gpu-bar' +
-      (d.gpu_util > 85 ? ' hot' : d.gpu_util > 55 ? ' warm' : '');
+// ── System meter (CPU / RAM) ──────────────────────────────────
+const sysMeters = document.getElementById('sys-meters');
+
+function _buildSysMeter() {
+  const div = document.createElement('div');
+  div.className = 'gpu-meter';
+  div.id = 'sys-meter-cpu';
+  div.innerHTML = `
+    <div class="gpu-meter-row">
+      <span class="gpu-meter-label">CPU</span>
+      <span class="gpu-pct" id="sys-cpu-pct">--</span>
+    </div>
+    <div class="gpu-bar-wrap"><div id="sys-cpu-bar" class="gpu-bar"></div></div>
+    <div class="gpu-meter-row"><span class="gpu-vram" id="sys-ram">-- RAM</span></div>`;
+  return div;
+}
+
+async function pollSystem() {
+  if (!sysMeters) return;
+  if (!sysMeters.children.length) sysMeters.appendChild(_buildSysMeter());
+  try {
+    const res = await fetch('/api/system');
+    if (!res.ok) { document.getElementById('sys-meter-cpu')?.classList.add('unavailable'); return; }
+    const d = await res.json();
+    if (!d.ok) { document.getElementById('sys-meter-cpu')?.classList.add('unavailable'); return; }
+    document.getElementById('sys-meter-cpu').classList.remove('unavailable');
+    document.getElementById('sys-cpu-pct').textContent = `${d.cpu_util}%`;
+    const bar = document.getElementById('sys-cpu-bar');
+    bar.style.width = `${d.cpu_util}%`;
+    bar.className = 'gpu-bar' + (d.cpu_util > 85 ? ' hot' : d.cpu_util > 55 ? ' warm' : '');
     const used  = (d.mem_used  / 1073741824).toFixed(1);
     const total = (d.mem_total / 1073741824).toFixed(1);
-    gpuVram.textContent = `${used}/${total} GB`;
-  } catch (_) {
-    gpuMeter.classList.add('unavailable');
-  }
+    document.getElementById('sys-ram').textContent = `${used}/${total} GB`;
+  } catch (_) { document.getElementById('sys-meter-cpu')?.classList.add('unavailable'); }
 }
 
 // ── Error bar ─────────────────────────────────────────────────
@@ -1058,11 +1127,365 @@ refreshModelsBtn.addEventListener('click', async () => {
   }
 });
 
+// ── Tab switching ─────────────────────────────────────────────
+const tabBar         = document.getElementById('tab-bar');
+const chatView       = document.getElementById('chat-view');
+const workbenchView  = document.getElementById('workbench-view');
+
+tabBar.addEventListener('click', e => {
+  const btn = e.target.closest('.tab-btn');
+  if (!btn) return;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const tab = btn.dataset.tab;
+  chatView.hidden      = tab !== 'chat';
+  workbenchView.hidden = tab !== 'workbench';
+  if (tab === 'workbench') loadWorkbench();
+});
+
+// ── Workbench ─────────────────────────────────────────────────
+const wbScopeList    = document.getElementById('wb-scope-list');
+const wbManageBtn    = document.getElementById('wb-manage-btn');
+const wbOpenChatBtn  = document.getElementById('wb-open-chat-btn');
+const wbTypeFilter   = document.getElementById('wb-type-filter');
+const wbUploadType   = document.getElementById('wb-upload-type');
+const wbDocUpload    = document.getElementById('wb-doc-upload');
+const wbUploadStatus = document.getElementById('wb-upload-status');
+const wbDocTbody     = document.getElementById('wb-doc-tbody');
+
+// Manage modal
+const wbManageBackdrop = document.getElementById('wb-manage-backdrop');
+const wbManageModal    = document.getElementById('wb-manage-modal');
+const wbManageBody     = document.getElementById('wb-manage-body');
+const wbManageClose    = document.getElementById('wb-manage-close');
+const wbNewClientInput = document.getElementById('wb-new-client-input');
+const wbAddClientBtn   = document.getElementById('wb-add-client-btn');
+
+let wbClients     = [];
+let wbAllProjects = [];
+let wbDocs        = [];
+// Active scope: { type: 'global'|'client'|'project', clientId, projectId, label }
+let wbScope = { type: 'global', clientId: null, projectId: null, label: 'Global' };
+
+function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
+
+async function loadWorkbench() {
+  const [cr, pr] = await Promise.all([
+    fetch('/api/library/clients').catch(() => null),
+    fetch('/api/library/projects').catch(() => null),
+  ]);
+  wbClients     = cr?.ok ? await cr.json() : [];
+  wbAllProjects = pr?.ok ? await pr.json() : [];
+  renderWbScopeList();
+  await loadWbDocs();
+}
+
+function renderWbScopeList() {
+  wbScopeList.innerHTML = '';
+
+  // Global row
+  const globalRow = _makeScopeRow('◆ Global', 'global-row', wbScope.type === 'global' && !wbScope.clientId);
+  globalRow.addEventListener('click', () => setWbScope({ type: 'global', clientId: null, projectId: null, label: 'Global' }));
+  wbScopeList.appendChild(globalRow);
+
+  // Clients + their projects
+  wbClients.forEach(c => {
+    const clientActive = wbScope.type === 'client' && wbScope.clientId === c.id;
+    const cRow = _makeScopeRow(c.name, 'client-row', clientActive);
+    cRow.addEventListener('click', () => setWbScope({ type: 'client', clientId: c.id, projectId: null, label: c.name }));
+    wbScopeList.appendChild(cRow);
+
+    wbAllProjects.filter(p => p.client_id === c.id).forEach(p => {
+      const projActive = wbScope.type === 'project' && wbScope.projectId === p.id;
+      const pRow = _makeScopeRow(p.name, 'project-row', projActive);
+      pRow.addEventListener('click', () => setWbScope({ type: 'project', clientId: c.id, projectId: p.id, label: p.name }));
+      wbScopeList.appendChild(pRow);
+    });
+  });
+}
+
+function _makeScopeRow(label, extraClass, active) {
+  const row = document.createElement('div');
+  row.className = 'wb-scope-row' + (extraClass ? ' ' + extraClass : '') + (active ? ' active' : '');
+  row.innerHTML = `<span class="wb-scope-dot"></span><span>${_esc(label)}</span>`;
+  return row;
+}
+
+async function setWbScope(scope) {
+  wbScope = scope;
+  wbOpenChatBtn.disabled = scope.type !== 'project';
+  document.getElementById('wb-scope-label').textContent = scope.label;
+  renderWbScopeList();
+  await loadWbDocs();
+}
+
+async function loadWbDocs() {
+  const params = new URLSearchParams();
+  if (wbScope.type === 'project' && wbScope.projectId) params.set('project_id', wbScope.projectId);
+  else if (wbScope.type === 'client' && wbScope.clientId) params.set('client_id', wbScope.clientId);
+  // global: no params → returns global-scoped docs only
+  try {
+    const res = await fetch(`/api/documents?${params}`);
+    wbDocs = res.ok ? await res.json() : [];
+  } catch { wbDocs = []; }
+  renderWbDocs();
+}
+
+function renderWbDocs() {
+  const filter = wbTypeFilter.value;
+  const rows = wbDocs.filter(d => !filter || d.doc_type === filter);
+  if (!rows.length) {
+    const msg = wbScope.type === 'global' && !wbClients.length
+      ? 'No global documents yet. Upload a standard or reference document using the + Upload button.'
+      : 'No documents found for this scope.';
+    wbDocTbody.innerHTML = `<tr class="wb-empty-row"><td colspan="6">${msg}</td></tr>`;
+    return;
+  }
+  wbDocTbody.innerHTML = '';
+  rows.forEach(d => {
+    const tr = document.createElement('tr');
+    const date = (d.created_at || '').slice(0, 10);
+    tr.innerHTML = `
+      <td title="${_esc(d.filename)}">${_esc(d.filename)}</td>
+      <td><span class="doc-type-badge">${_esc(d.doc_type)}</span></td>
+      <td><span class="scope-badge ${d.scope_type}">${d.scope_type}</span></td>
+      <td>${date}</td>
+      <td>${d.chunk_count}</td>
+      <td><button class="wb-del-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Delete document">✕</button></td>`;
+    wbDocTbody.appendChild(tr);
+  });
+}
+
+wbDocTbody.addEventListener('click', async e => {
+  const btn = e.target.closest('.wb-del-btn');
+  if (!btn) return;
+  if (!confirm(`Delete "${btn.dataset.name}"?\n\nThis removes it permanently from the knowledge graph.`)) return;
+  const res = await fetch(`/api/documents/${btn.dataset.id}`, { method: 'DELETE' });
+  if (res.ok) await loadWbDocs();
+  else showErrorBar('Failed to delete document.');
+});
+
+wbTypeFilter.addEventListener('change', renderWbDocs);
+
+wbOpenChatBtn.addEventListener('click', () => {
+  if (wbScope.type !== 'project') return;
+  document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+  document.querySelector('.tab-btn[data-tab="chat"]').classList.add('active');
+  chatView.hidden      = false;
+  workbenchView.hidden = true;
+  newChat();
+  chatView.dataset.projectId   = wbScope.projectId;
+  chatView.dataset.projectName = wbScope.label;
+  input.placeholder = `Ask anything… (project: ${wbScope.label})`;
+  input.focus();
+});
+
+wbDocUpload.addEventListener('change', async () => {
+  const file = wbDocUpload.files[0];
+  if (!file) return;
+  const docType = wbUploadType.value;
+  const fd = new FormData();
+  fd.append('file', file);
+  fd.append('doc_type', docType);
+  if (wbScope.type === 'project' && wbScope.projectId) fd.append('project_id', wbScope.projectId);
+  else if (wbScope.type === 'client' && wbScope.clientId) fd.append('client_id', wbScope.clientId);
+  // global: no scope param
+
+  wbUploadStatus.textContent = `Uploading ${file.name}…`;
+  try {
+    const res = await fetch('/api/documents', { method: 'POST', body: fd });
+    if (res.ok) {
+      wbUploadStatus.textContent = `✓ ${file.name} uploaded`;
+      await loadWbDocs();
+    } else {
+      const err = await res.json().catch(() => ({}));
+      wbUploadStatus.textContent = '';
+      showErrorBar(err.detail || 'Upload failed.');
+    }
+  } catch {
+    wbUploadStatus.textContent = '';
+    showErrorBar('Upload failed.');
+  }
+  setTimeout(() => { wbUploadStatus.textContent = ''; }, 4000);
+  wbDocUpload.value = '';
+});
+
+// ── Manage modal ──────────────────────────────────────────────
+function openManageModal() {
+  renderManageModal();
+  wbManageBackdrop.hidden = false;
+  wbManageModal.hidden    = false;
+}
+
+function closeManageModal() {
+  wbManageBackdrop.hidden = true;
+  wbManageModal.hidden    = true;
+}
+
+function renderManageModal() {
+  wbManageBody.innerHTML = '';
+  if (!wbClients.length) {
+    wbManageBody.innerHTML = '<p class="manage-empty">No clients yet. Add one below.</p>';
+    return;
+  }
+  wbClients.forEach(c => {
+    const projects = wbAllProjects.filter(p => p.client_id === c.id);
+    const section = document.createElement('div');
+    section.className = 'manage-client-section';
+
+    const clientRow = document.createElement('div');
+    clientRow.className = 'manage-client-row';
+    clientRow.innerHTML = `<span class="manage-client-name">${_esc(c.name)}</span>`;
+    const delClientBtn = document.createElement('button');
+    delClientBtn.className = 'wb-del-btn';
+    delClientBtn.title = 'Delete client';
+    delClientBtn.textContent = '✕';
+    delClientBtn.addEventListener('click', async () => {
+      if (!confirm(`Delete client "${c.name}" and all its projects?`)) return;
+      const res = await fetch(`/api/library/clients/${c.id}`, { method: 'DELETE' });
+      if (res.ok) { await loadWorkbench(); renderManageModal(); }
+      else showErrorBar('Failed to delete client.');
+    });
+    clientRow.appendChild(delClientBtn);
+    section.appendChild(clientRow);
+
+    projects.forEach(p => {
+      const pRow = document.createElement('div');
+      pRow.className = 'manage-project-row';
+      pRow.innerHTML = `<span>◇ ${_esc(p.name)}</span>`;
+      const delProjBtn = document.createElement('button');
+      delProjBtn.className = 'wb-del-btn';
+      delProjBtn.title = 'Delete project';
+      delProjBtn.textContent = '✕';
+      delProjBtn.addEventListener('click', async () => {
+        if (!confirm(`Delete project "${p.name}"?`)) return;
+        const res = await fetch(`/api/library/projects/${p.id}`, { method: 'DELETE' });
+        if (res.ok) { await loadWorkbench(); renderManageModal(); }
+        else showErrorBar('Failed to delete project.');
+      });
+      pRow.appendChild(delProjBtn);
+      section.appendChild(pRow);
+    });
+
+    // Add project row
+    const addProjRow = document.createElement('div');
+    addProjRow.className = 'manage-add-project';
+    const projInput = document.createElement('input');
+    projInput.type = 'text';
+    projInput.placeholder = 'New project name…';
+    const addProjBtn = document.createElement('button');
+    addProjBtn.className = 'icon-btn';
+    addProjBtn.textContent = '+ Add';
+    addProjBtn.addEventListener('click', async () => {
+      const name = projInput.value.trim();
+      if (!name) return;
+      const res = await fetch('/api/library/projects', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, client_id: c.id }),
+      });
+      if (res.ok) { projInput.value = ''; await loadWorkbench(); renderManageModal(); }
+      else { const e = await res.json().catch(() => ({})); showErrorBar(e.detail || 'Failed to create project.'); }
+    });
+    projInput.addEventListener('keydown', e => { if (e.key === 'Enter') addProjBtn.click(); });
+    addProjRow.appendChild(projInput);
+    addProjRow.appendChild(addProjBtn);
+    section.appendChild(addProjRow);
+
+    wbManageBody.appendChild(section);
+  });
+}
+
+wbManageBtn.addEventListener('click', openManageModal);
+wbManageClose.addEventListener('click', closeManageModal);
+wbManageBackdrop.addEventListener('click', closeManageModal);
+
+wbAddClientBtn.addEventListener('click', async () => {
+  const name = wbNewClientInput.value.trim();
+  if (!name) return;
+  const res = await fetch('/api/library/clients', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ name }),
+  });
+  if (res.ok) { wbNewClientInput.value = ''; await loadWorkbench(); renderManageModal(); }
+  else { const e = await res.json().catch(() => ({})); showErrorBar(e.detail || 'Failed to create client.'); }
+});
+wbNewClientInput.addEventListener('keydown', e => { if (e.key === 'Enter') wbAddClientBtn.click(); });
+
+// ── Maintenance actions ───────────────────────────────────────
+const wbReindexBtn        = document.getElementById('wb-reindex-btn');
+const wbReindexAllBtn     = document.getElementById('wb-reindex-all-btn');
+const wbMigrateScopeBtn   = document.getElementById('wb-migrate-scope-btn');
+const wbMaintenanceStatus = document.getElementById('wb-maintenance-status');
+
+async function runReindex(params = {}) {
+  const qs = new URLSearchParams(params).toString();
+  const url = '/api/documents/reindex' + (qs ? '?' + qs : '');
+  const btn = params.project_id || params.client_id ? wbReindexBtn : wbReindexAllBtn;
+  const statusEl = params.project_id || params.client_id ? wbUploadStatus : wbMaintenanceStatus;
+  btn.disabled = true;
+  statusEl.textContent = 'Re-indexing…';
+  try {
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) {
+      statusEl.textContent = `Done — ${data.docs_reindexed} doc(s), ${data.chunks_processed} chunk(s)`;
+    } else {
+      statusEl.textContent = data.detail || 'Re-index failed.';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Re-index error.';
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { statusEl.textContent = ''; }, 8000);
+  }
+}
+
+wbReindexBtn.addEventListener('click', () => {
+  const params = {};
+  if (wbScope.type === 'project' && wbScope.projectId) params.project_id = wbScope.projectId;
+  else if (wbScope.type === 'client' && wbScope.clientId) params.client_id = wbScope.clientId;
+  runReindex(params);
+});
+
+wbReindexAllBtn.addEventListener('click', () => runReindex());
+
+wbMigrateScopeBtn.addEventListener('click', async () => {
+  wbMigrateScopeBtn.disabled = true;
+  wbMaintenanceStatus.textContent = 'Migrating…';
+  try {
+    const res = await fetch('/api/documents/migrate-concept-scope', { method: 'POST' });
+    wbMaintenanceStatus.textContent = res.ok ? 'Migration complete.' : 'Migration failed.';
+  } catch (e) {
+    wbMaintenanceStatus.textContent = 'Migration error.';
+  } finally {
+    wbMigrateScopeBtn.disabled = false;
+    setTimeout(() => { wbMaintenanceStatus.textContent = ''; }, 8000);
+  }
+});
+
+// ── Help modal ────────────────────────────────────────────────
+const helpBackdrop  = document.getElementById('help-backdrop');
+const helpModal     = document.getElementById('help-modal');
+const helpCloseBtn  = document.getElementById('help-close-btn');
+const helpCloseX    = document.getElementById('help-close');
+const helpBtn       = document.getElementById('help-btn');
+
+function openHelp()  { helpBackdrop.hidden = false; helpModal.hidden = false; }
+function closeHelp() { helpBackdrop.hidden = true;  helpModal.hidden = true; }
+
+helpBtn.addEventListener('click', openHelp);
+helpCloseBtn.addEventListener('click', closeHelp);
+helpCloseX.addEventListener('click', closeHelp);
+helpBackdrop.addEventListener('click', closeHelp);
+document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); closeManageModal(); } });
+
 // ── Bootstrap ─────────────────────────────────────────────────
 fetchModels().then(pollModelStatus);
 fetchConversations();
 fetchDocuments();
 pollGpu();
 setInterval(pollGpu, 3000);
+pollSystem();
+setInterval(pollSystem, 3000);
 setInterval(pollModelStatus, 5000);
 input.focus();

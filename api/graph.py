@@ -377,6 +377,8 @@ def index_chunk_concepts(
     entities: list[str],
     doc_role: str = "unknown",
     key_assertion: str = "",
+    scope_type: str = "global",
+    scope_id: str | None = None,
 ) -> None:
     """
     Link a chunk to its extracted concept and entity hub nodes.
@@ -384,13 +386,17 @@ def index_chunk_concepts(
     Creates concept/entity nodes if they don't exist, then adds
     ``addresses_concept`` and ``mentions_entity`` edges from the chunk.
     Also updates the chunk node with ``doc_role`` and ``key_assertion``
-    metadata from the extractor.
+    metadata from the extractor, and records each concept's scope in the
+    ``concept_scope`` table so vocabulary can be filtered per client/project.
 
     :param chunk_id:      Chunk ID (same as ChromaDB / RAG chunk ID).
     :param concepts:      List of concept strings from extractor.
     :param entities:      List of entity strings from extractor.
     :param doc_role:      Rhetorical role of the chunk (from extractor).
     :param key_assertion: One-sentence summary (stored on chunk node properties).
+    :param scope_type:    Scope of the source document (``"global"``, ``"client"``,
+                          ``"project"``, or ``"session"``).
+    :param scope_id:      ID qualifying the scope, or ``None`` for global.
     """
     cnode = _chunk_node(chunk_id)
 
@@ -421,6 +427,8 @@ def index_chunk_concepts(
             edge_type="addresses_concept",
             weight=EDGE_WEIGHTS["addresses_concept"],
         )
+        # Record which scope this concept was observed in.
+        db.record_concept_scope(concept, scope_type, scope_id or "")
 
     for entity in entities:
         eid = _entity_node(entity)

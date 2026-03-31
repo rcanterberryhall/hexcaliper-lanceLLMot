@@ -12,6 +12,8 @@ from fastapi.responses import Response
 import config
 import copyright_extract
 import db
+import extractor
+import graph
 import ollama
 import parser
 import rag
@@ -134,3 +136,88 @@ async def delete_document(doc_id: str, request: Request):
         db.delete_document(doc_id)
     rag.delete_chunks(doc_id)
     return Response(status_code=204)
+
+
+@router.post("/documents/reindex")
+async def reindex_documents(
+    request:    Request,
+    project_id: Optional[str] = None,
+    client_id:  Optional[str] = None,
+):
+    """
+    Re-run concept extraction on all existing document chunks using the current
+    vocabulary, back-propagating newly learned keywords to older documents.
+
+    Without query params: reindexes all documents owned by this user.
+    With ``project_id``: only that project's documents.
+    With ``client_id``: only that client's documents.
+    """
+    user_email = _user(request)
+
+    with db.lock:
+        if project_id:
+            docs = db.list_documents_for_scope(user_email, ["project"], [project_id])
+        elif client_id:
+            docs = db.list_documents_for_scope(user_email, ["client"], [client_id])
+        else:
+            docs = db.list_all_documents(user_email)
+
+    docs_processed   = 0
+    chunks_processed = 0
+
+    for doc in docs:
+        doc_id     = doc["id"]
+        scope_type = doc.get("scope_type", "global")
+        scope_id   = doc.get("scope_id") or None
+        doc_type   = doc.get("doc_type", "")
+
+        # Build scoped vocabulary — same hierarchy as ingest().
+        vocab_scope_types: list[str]        = ["global"]
+        vocab_scope_ids:   list[Optional[str]] = [None]
+        if scope_type == "client" and scope_id:
+            vocab_scope_types.append("client")
+            vocab_scope_ids.append(scope_id)
+        elif scope_type == "project" and scope_id:
+            vocab_scope_types.append("project")
+            vocab_scope_ids.append(scope_id)
+            proj = db.get_project(scope_id)
+            if proj and proj.get("client_id"):
+                vocab_scope_types.append("client")
+                vocab_scope_ids.append(proj["client_id"])
+        elif scope_type == "session" and scope_id:
+            vocab_scope_types.append("session")
+            vocab_scope_ids.append(scope_id)
+
+        with db.lock:
+            learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+
+        for chunk_id, chunk_text in rag.get_doc_chunks(doc_id):
+            result = await extractor.extract_chunk(
+                chunk_text, doc_type=doc_type, learned_vocab=learned_vocab
+            )
+            if not result.is_empty():
+                graph.index_chunk_concepts(
+                    chunk_id,
+                    concepts=result.concepts,
+                    entities=result.entities,
+                    doc_role=result.doc_role,
+                    key_assertion=result.key_assertion,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                )
+            chunks_processed += 1
+
+        docs_processed += 1
+
+    return {"ok": True, "docs_reindexed": docs_processed, "chunks_processed": chunks_processed}
+
+
+@router.post("/documents/migrate-concept-scope")
+async def migrate_concept_scope():
+    """
+    Backfill concept_scope for concept nodes indexed before scoped vocabulary
+    was introduced.  Assigns them global scope.  Safe to call multiple times.
+    """
+    with db.lock:
+        db.migrate_concept_scope()
+    return {"ok": True}

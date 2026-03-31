@@ -106,8 +106,37 @@ def _create_schema(c: sqlite3.Connection) -> None:
     CREATE INDEX IF NOT EXISTS idx_edges_dst  ON edges(dst_id, edge_type);
     CREATE INDEX IF NOT EXISTS idx_nodes_type ON nodes(node_type);
 
+    CREATE TABLE IF NOT EXISTS concept_scope (
+        concept_label TEXT NOT NULL,
+        scope_type    TEXT NOT NULL,
+        scope_id      TEXT NOT NULL DEFAULT '',
+        PRIMARY KEY (concept_label, scope_type, scope_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_concept_scope ON concept_scope(scope_type, scope_id);
+
     COMMIT;
     """)
+
+
+# ── Concept scope backfill ────────────────────────────────────────────────────
+
+def migrate_concept_scope() -> None:
+    """
+    Backfill concept_scope for concept nodes that were indexed before the
+    concept_scope table existed.  All pre-existing concepts are recorded as
+    global scope since we can't retroactively determine their original scope.
+    Idempotent — already-recorded pairs are skipped via INSERT OR IGNORE.
+    """
+    c = conn()
+    rows = c.execute(
+        "SELECT label FROM nodes WHERE node_type='concept'"
+    ).fetchall()
+    if not rows:
+        return
+    c.executemany(
+        "INSERT OR IGNORE INTO concept_scope (concept_label, scope_type, scope_id) VALUES (?,?,?)",
+        [(r[0].lower().strip(), "global", "") for r in rows],
+    )
 
 
 # ── TinyDB migration ──────────────────────────────────────────────────────────
@@ -240,6 +269,15 @@ def list_documents_for_scope(user_email: str,
     return [_doc(dict(r)) for r in rows]
 
 
+def list_all_documents(user_email: str) -> list[dict]:
+    """Return all documents owned by *user_email* regardless of scope."""
+    rows = conn().execute(
+        "SELECT * FROM documents WHERE user_email=? ORDER BY created_at DESC",
+        (user_email,),
+    ).fetchall()
+    return [_doc(dict(r)) for r in rows]
+
+
 def insert_document(doc: dict) -> None:
     conn().execute(
         "INSERT INTO documents "
@@ -356,6 +394,59 @@ def get_edges_to(node_id: str, edge_type: Optional[str] = None) -> list[dict]:
     else:
         rows = conn().execute("SELECT * FROM edges WHERE dst_id=?", (node_id,)).fetchall()
     return [dict(r) for r in rows]
+
+
+def record_concept_scope(concept_label: str, scope_type: str, scope_id: str = "") -> None:
+    """Record that a concept was observed in the given scope (idempotent)."""
+    conn().execute(
+        "INSERT OR IGNORE INTO concept_scope (concept_label, scope_type, scope_id) VALUES (?,?,?)",
+        (concept_label.lower().strip(), scope_type, scope_id or ""),
+    )
+
+
+def list_concept_vocab(
+    scope_types: list[str] | None = None,
+    scope_ids: list | None = None,
+) -> list[str]:
+    """
+    Return learned concept labels visible in the given scope hierarchy.
+
+    When *scope_types* is None, returns all known concepts (used for global
+    ingest or backward-compat callers).  When provided, returns only concepts
+    recorded against at least one of the (scope_type, scope_id) pairs so that
+    project-level extractions are seeded with global + client + project vocab
+    rather than the entire cross-tenant vocabulary.
+
+    :param scope_types: List of scope type strings to include.
+    :param scope_ids:   Parallel list of scope IDs (None or "" means any ID for
+                        that scope type, i.e. global-scope concepts).
+    :return: Sorted list of distinct concept label strings.
+    """
+    if not scope_types:
+        rows = conn().execute(
+            "SELECT DISTINCT concept_label FROM concept_scope ORDER BY concept_label"
+        ).fetchall()
+        return [r[0] for r in rows]
+
+    if scope_ids is None:
+        scope_ids = [None] * len(scope_types)
+
+    clauses: list[str] = []
+    params: list = []
+    for st, si in zip(scope_types, scope_ids):
+        if si is None or si == "":
+            clauses.append("(scope_type=?)")
+            params.append(st)
+        else:
+            clauses.append("(scope_type=? AND scope_id=?)")
+            params.extend([st, si])
+
+    where = " OR ".join(clauses) if clauses else "1=0"
+    rows = conn().execute(
+        f"SELECT DISTINCT concept_label FROM concept_scope WHERE {where} ORDER BY concept_label",
+        params,
+    ).fetchall()
+    return [r[0] for r in rows]
 
 
 def get_node(node_id: str) -> Optional[dict]:

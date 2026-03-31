@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import chromadb
+import db
 import extractor
 import graph
 import httpx
@@ -167,10 +168,38 @@ async def ingest(
     graph.parse_and_index_references(text[:60_000], doc_id)
 
     # ── Concept extraction (LLM) ──────────────────────────────────────────────
+    # Build the scope hierarchy for vocabulary lookup so concepts from unrelated
+    # clients/projects are not mixed into this document's extraction prompt.
+    #
+    #   global   → global concepts only
+    #   client   → global + that client's concepts
+    #   project  → global + owning client's concepts + that project's concepts
+    #   session  → global + that session's concepts
+    vocab_scope_types: list[str] = ["global"]
+    vocab_scope_ids: list = [None]
+    if scope_type == "client" and scope_id:
+        vocab_scope_types.append("client")
+        vocab_scope_ids.append(scope_id)
+    elif scope_type == "project" and scope_id:
+        vocab_scope_types.append("project")
+        vocab_scope_ids.append(scope_id)
+        # Also include the owning client's vocabulary.
+        project_row = db.get_project(scope_id)
+        if project_row and project_row.get("client_id"):
+            vocab_scope_types.append("client")
+            vocab_scope_ids.append(project_row["client_id"])
+    elif scope_type == "session" and scope_id:
+        vocab_scope_types.append("session")
+        vocab_scope_ids.append(scope_id)
+
+    with db.lock:
+        learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+
     # Extract concepts/entities per chunk and index as graph hub nodes.
     # Failure is non-fatal — each chunk is independently fault-tolerant.
     for i, chunk in enumerate(chunks):
-        result = await extractor.extract_chunk(chunk, doc_type=doc_type)
+        result = await extractor.extract_chunk(chunk, doc_type=doc_type,
+                                               learned_vocab=learned_vocab)
         if not result.is_empty():
             graph.index_chunk_concepts(
                 chunk_ids[i],
@@ -178,6 +207,8 @@ async def ingest(
                 entities=result.entities,
                 doc_role=result.doc_role,
                 key_assertion=result.key_assertion,
+                scope_type=scope_type,
+                scope_id=scope_id,
             )
 
     return len(chunks)
@@ -324,6 +355,24 @@ async def search(
 
 
 # ── Deletion ───────────────────────────────────────────────────
+
+def get_doc_chunks(doc_id: str) -> list[tuple[str, str]]:
+    """
+    Fetch all (chunk_id, text) pairs for a document from ChromaDB.
+
+    Used by the re-index endpoint to iterate over existing chunks without
+    needing to re-parse the source file.
+
+    :param doc_id: The document whose chunks to retrieve.
+    :return: List of ``(chunk_id, text)`` tuples in storage order.
+    """
+    col = get_collection()
+    try:
+        results = col.get(where={"doc_id": doc_id}, include=["documents"])
+        return [(cid, doc) for cid, doc in zip(results["ids"], results["documents"]) if doc]
+    except Exception:
+        return []
+
 
 def delete_chunks(doc_id: str) -> None:
     """

@@ -10,9 +10,10 @@
     │     └── chat doc list      — populated by fetchChatDocuments(); hidden until a conversation is active
     └── #main (flex column)
           ├── <header>           — branding, GPU meter, model selector
+          ├── #tab-bar           — Chat / Workbench tab switcher
           ├── #error-bar         — dismissible notification banner (hidden by default)
-          ├── #chat              — scrollable message log; aria-live for screen readers
-          └── #composer          — textarea + send button
+          ├── #chat-view         — chat log + system prompt + composer
+          └── #workbench-view    — client/project selector + document library
 
   All dynamic content (messages, lists, status) is managed by app.js.
   No inline scripts or styles — all logic lives in app.js / styles.css.
@@ -78,19 +79,12 @@
           <p>AI Workbench</p>
         </div>
 
-        <!-- GPU utilisation meter; hidden on mobile, faded when unavailable -->
-        <div id="gpu-meter" title="">
-          <div class="gpu-meter-row">
-            <span class="gpu-meter-label">GPU</span>
-            <span id="gpu-pct">--</span>
-          </div>
-          <div class="gpu-bar-wrap">
-            <div id="gpu-util-bar" class="gpu-bar"></div>
-          </div>
-          <div class="gpu-meter-row">
-            <span id="gpu-vram">-- VRAM</span>
-          </div>
-        </div>
+        <!-- CPU/RAM and GPU meters; dynamically built; hidden on mobile -->
+        <div id="sys-meters"></div>
+        <div id="gpu-meters"></div>
+
+        <!-- Help button -->
+        <button id="help-btn" class="icon-btn" title="Help">?</button>
 
         <!-- Model selector with load-status dot and action buttons -->
         <div class="model-wrap">
@@ -105,35 +99,251 @@
         </div>
       </header>
 
+      <!-- Tab bar — switches between Chat and Workbench views -->
+      <div id="tab-bar">
+        <button class="tab-btn active" data-tab="chat">Chat</button>
+        <button class="tab-btn"        data-tab="workbench">Workbench</button>
+      </div>
+
       <!-- Dismissible notification banner; data-level controls colour (error/warning/info) -->
       <div id="error-bar" hidden role="alert">
         <span id="error-bar-text"></span>
         <button id="error-bar-dismiss" aria-label="Dismiss">✕</button>
       </div>
 
-      <!-- Scrollable chat message log; aria-live announces new messages to screen readers -->
-      <div id="chat" role="log" aria-live="polite" aria-label="Chat conversation"></div>
+      <!-- ── Chat view ── -->
+      <div id="chat-view">
+        <!-- Scrollable chat message log; aria-live announces new messages to screen readers -->
+        <div id="chat" role="log" aria-live="polite" aria-label="Chat conversation"></div>
 
-      <!-- System prompt — hidden by default, toggled by the ⚙ button -->
-      <div id="system-prompt-wrap" hidden>
-        <textarea
-          id="system-prompt"
-          rows="2"
-          placeholder="System prompt (optional) — sets the AI's persona or constraints for this conversation…"
-        ></textarea>
+        <!-- System prompt — hidden by default, toggled by the ⚙ button -->
+        <div id="system-prompt-wrap" hidden>
+          <textarea
+            id="system-prompt"
+            rows="2"
+            placeholder="System prompt (optional) — sets the AI's persona or constraints for this conversation…"
+          ></textarea>
+        </div>
+
+        <!-- Message composer: auto-resizing textarea, Enter to send (Shift+Enter for newline) -->
+        <form id="composer" autocomplete="off">
+          <textarea
+            id="input"
+            rows="1"
+            placeholder="Ask anything…"
+            aria-label="Message input"
+          ></textarea>
+          <button type="button" id="system-btn" class="icon-btn" title="Set system prompt">⚙</button>
+          <button type="submit" id="send-btn">Send</button>
+        </form>
       </div>
 
-      <!-- Message composer: auto-resizing textarea, Enter to send (Shift+Enter for newline) -->
-      <form id="composer" autocomplete="off">
-        <textarea
-          id="input"
-          rows="1"
-          placeholder="Ask anything…"
-          aria-label="Message input"
-        ></textarea>
-        <button type="button" id="system-btn" class="icon-btn" title="Set system prompt">⚙</button>
-        <button type="submit" id="send-btn">Send</button>
-      </form>
+      <!-- ── Workbench view ── -->
+      <div id="workbench-view" hidden>
+
+        <!-- Left: scope panel (clients / projects as clickable rows) -->
+        <div class="wb-panel">
+          <div class="wb-panel-head">
+            <span class="wb-panel-title">Library</span>
+            <button id="wb-manage-btn" class="icon-btn" title="Manage clients &amp; projects">⚙ Manage</button>
+          </div>
+          <div id="wb-scope-list"></div>
+        </div>
+
+        <!-- Right: filter bar + document table -->
+        <div class="wb-content">
+          <div class="wb-filter-bar">
+            <!-- Filter section -->
+            <label class="wb-label" for="wb-type-filter">Filter</label>
+            <select id="wb-type-filter">
+              <option value="">All types</option>
+              <option value="standard">Standard</option>
+              <option value="requirement">Requirement</option>
+              <option value="theop">THEOP</option>
+              <option value="fmea">FMEA</option>
+              <option value="hazard_analysis">Hazard Analysis</option>
+              <option value="fat">FAT</option>
+              <option value="sat">SAT</option>
+              <option value="contract">Contract</option>
+              <option value="correspondence">Correspondence</option>
+              <option value="plc_code">PLC Code</option>
+              <option value="misc">Misc</option>
+            </select>
+
+            <!-- Upload section — type selector + button are one unit -->
+            <span class="wb-scope-indicator">
+              uploading to: <strong id="wb-scope-label">Global</strong>
+            </span>
+            <div class="wb-upload-group">
+              <select id="wb-upload-type" title="Document type to assign on upload">
+                <option value="standard">Standard</option>
+                <option value="requirement">Requirement</option>
+                <option value="theop">THEOP</option>
+                <option value="fmea">FMEA</option>
+                <option value="hazard_analysis">Hazard Analysis</option>
+                <option value="fat">FAT</option>
+                <option value="sat">SAT</option>
+                <option value="contract">Contract</option>
+                <option value="correspondence">Correspondence</option>
+                <option value="plc_code">PLC Code</option>
+                <option value="misc" selected>Misc</option>
+              </select>
+              <label id="wb-upload-label" class="wb-upload-btn" title="Upload document to selected scope">
+                + Upload
+                <input type="file" id="wb-doc-upload" accept=".pdf,.docx,.xlsx,.txt,.md,.st,.scl" hidden />
+              </label>
+            </div>
+            <span id="wb-upload-status" class="wb-upload-status"></span>
+
+            <button id="wb-reindex-btn" class="wb-chat-btn" title="Re-run concept extraction on documents in the current scope using the latest vocabulary">Re-index</button>
+            <button id="wb-open-chat-btn" class="wb-chat-btn" disabled title="Open a new chat with this project's documents in context">Open in Chat</button>
+          </div>
+
+          <div class="wb-table-wrap">
+            <table class="wb-table">
+              <thead>
+                <tr>
+                  <th>Filename</th><th>Type</th><th>Scope</th><th>Uploaded</th><th>Chunks</th><th></th>
+                </tr>
+              </thead>
+              <tbody id="wb-doc-tbody">
+                <tr class="wb-empty-row"><td colspan="6">Select a scope from the panel to view documents.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+
+      </div>
+
+      <!-- ── Manage Library modal ── -->
+      <div id="wb-manage-backdrop" class="modal-backdrop" hidden></div>
+      <div id="wb-manage-modal" class="modal" hidden>
+        <div class="modal-head">
+          <span class="modal-head-title">MANAGE LIBRARY</span>
+          <button class="modal-close" id="wb-manage-close">✕</button>
+        </div>
+        <div class="modal-body" id="wb-manage-body"></div>
+        <div class="modal-foot">
+          <div class="manage-add-row">
+            <input type="text" id="wb-new-client-input" placeholder="New client name…" />
+            <button id="wb-add-client-btn" class="icon-btn">+ Add Client</button>
+          </div>
+          <div class="manage-maintenance">
+            <span class="manage-maintenance-label">Maintenance</span>
+            <button id="wb-reindex-all-btn" class="icon-btn" title="Re-run concept extraction on every document using the full current vocabulary">Re-index All</button>
+            <button id="wb-migrate-scope-btn" class="icon-btn" title="Backfill scope metadata for concepts indexed before scoped vocabulary was introduced">Migrate Concept Scope</button>
+            <span id="wb-maintenance-status" class="wb-upload-status"></span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ── Help modal ── -->
+      <div id="help-backdrop" class="modal-backdrop" hidden></div>
+      <div id="help-modal" class="modal help-modal" hidden>
+        <div class="modal-head">
+          <span class="modal-head-title">HELP</span>
+          <button class="modal-close" id="help-close">✕</button>
+        </div>
+        <div class="modal-body">
+
+          <div class="help-section">
+            <h3>Overview</h3>
+            <p>Hexcaliper is a self-hosted AI workbench for safety engineering document analysis. It runs entirely on your local infrastructure via Ollama — no data leaves your network.</p>
+            <p>Upload ISO/IEC standards, contracts, THEOPs, FMEAs, hazard analyses, FAT/SAT test records, PLC code, and correspondence. The AI connects documents by shared safety concepts (diagnostic coverage, SIL, safe state, etc.) so you can ask cross-document questions like <em>"Does this THEOP clause comply with IEC 61508 SIL 2?"</em></p>
+            <div class="help-tip">All analysis runs locally. Your documents and conversations never leave your server.</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Chat tab</h3>
+            <p>The main chat interface. Send messages to the AI and it will draw on your uploaded documents as context (RAG — retrieval-augmented generation).</p>
+            <table class="help-table">
+              <tr><th>Control</th><th>What it does</th></tr>
+              <tr><td>+ New Chat</td><td>Start a fresh conversation. Clears chat history and chat-scoped documents.</td></tr>
+              <tr><td>⚙ (system prompt)</td><td>Set an optional system prompt to give the AI a persona or specific instructions for this conversation.</td></tr>
+              <tr><td>Send / ■ Stop</td><td>Send your message. While the AI is responding, the button becomes <strong>■ Stop</strong> to cancel mid-stream.</td></tr>
+              <tr><td>Global Documents +</td><td>Upload a document visible across all conversations (global scope). Good for standards and reference material.</td></tr>
+              <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started.</td></tr>
+            </table>
+            <div class="help-tip">If a project is active (set via Workbench → Open in Chat), the project's documents are automatically included as context. The input placeholder will show the active project name.</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Workbench tab</h3>
+            <p>Manage your document library organised by client and project. Documents uploaded here persist permanently and are available across all sessions.</p>
+            <table class="help-table">
+              <tr><th>Control</th><th>What it does</th></tr>
+              <tr><td>⚙ Manage</td><td>Open the Library Manager to create or delete clients and projects.</td></tr>
+              <tr><td>Global row</td><td>Select to view all global-scope documents (ISO/IEC standards, shared references).</td></tr>
+              <tr><td>Client row</td><td>Select to view documents for that client (contracts, client requirements).</td></tr>
+              <tr><td>Project row</td><td>Select to view all documents in scope for that project: global + client + project-specific.</td></tr>
+              <tr><td>Type filter</td><td>Filter the document list by document type.</td></tr>
+              <tr><td>Upload as / + Upload</td><td>Upload a document to the selected scope with the chosen type.</td></tr>
+              <tr><td>Open in Chat</td><td>Switch to Chat tab with this project's full document scope loaded as context.</td></tr>
+              <tr><td>✕ (row)</td><td>Delete a document. Removes it from storage and the knowledge graph. Requires confirmation.</td></tr>
+            </table>
+          </div>
+
+          <div class="help-section">
+            <h3>Scope hierarchy</h3>
+            <p>Documents are organised in a three-tier hierarchy. When you chat with a project selected, all tiers above it are automatically included as context:</p>
+            <dl class="help-kv">
+              <dt>Global</dt><dd>ISO/IEC standards and shared reference material. Available in all conversations and all projects.</dd>
+              <dt>Client</dt><dd>Contracts, client requirements, and specifications that apply to all of that client's projects.</dd>
+              <dt>Project</dt><dd>THEOPs, FMEAs, hazard analyses, FAT/SAT records, and PLC code specific to one project. Inherits global + client documents.</dd>
+              <dt>Chat</dt><dd>Temporary documents uploaded during a single conversation. Deleted when the conversation is cleared.</dd>
+            </dl>
+          </div>
+
+          <div class="help-section">
+            <h3>Document types</h3>
+            <table class="help-table">
+              <tr><th>Type</th><th>Description</th></tr>
+              <tr><td>standard</td><td>ISO/IEC standards (IEC 61508, IEC 62061, ISO 13849, etc.)</td></tr>
+              <tr><td>requirement</td><td>Safety requirements specifications (SRS, SIL determination reports)</td></tr>
+              <tr><td>theop</td><td>Theory of operation documents describing system behaviour</td></tr>
+              <tr><td>fmea</td><td>Failure Mode and Effects Analysis</td></tr>
+              <tr><td>hazard_analysis</td><td>Hazard and Risk Assessment (HAZOP, PHA, SIL Assessment)</td></tr>
+              <tr><td>fat</td><td>Factory Acceptance Test procedures and records</td></tr>
+              <tr><td>sat</td><td>Site Acceptance Test procedures and records</td></tr>
+              <tr><td>contract</td><td>Client contracts and purchase orders</td></tr>
+              <tr><td>correspondence</td><td>Emails, letters, meeting minutes related to a project</td></tr>
+              <tr><td>plc_code</td><td>IEC 61131-3 source code (ST, LAD, FBD, SFC, IL)</td></tr>
+              <tr><td>misc</td><td>Any other document</td></tr>
+            </table>
+          </div>
+
+          <div class="help-section">
+            <h3>Knowledge graph &amp; concept linking</h3>
+            <p>When a document is uploaded, Hexcaliper does two things beyond basic vector search:</p>
+            <dl class="help-kv">
+              <dt>Citation links</dt><dd>Standard identifiers (IEC 61508-1, ISO 13849, etc.) are extracted by regex and linked as hub nodes. Documents referencing the same standard are connected.</dd>
+              <dt>Concept links</dt><dd>The AI extracts abstract safety concepts from each chunk — "diagnostic coverage", "safe state", "proof test interval", etc. Chunks addressing the same concept across different documents are linked regardless of explicit citation numbers.</dd>
+            </dl>
+            <p>This means asking <em>"Does this THEOP satisfy IEC 61508 SIL 2 requirements for diagnostic coverage?"</em> can traverse from your THEOP chunks to IEC 61508 chunks that address the same concept, even if the THEOP never cites the standard by number.</p>
+            <div class="help-tip">Concept extraction runs in the background after upload. A 30B+ model gives the best extraction quality (set <code>EXTRACT_MODEL</code> env var).</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Models</h3>
+            <table class="help-table">
+              <tr><th>Control</th><th>What it does</th></tr>
+              <tr><td>Model selector</td><td>Choose which Ollama model to use for chat. The dot shows load status: green = loaded, amber = loading.</td></tr>
+              <tr><td>Load</td><td>Pre-load the selected model into VRAM. Eliminates the cold-start delay on the first message.</td></tr>
+              <tr><td>↻</td><td>Refresh the model list from Ollama. Also useful after pulling a new model with <code>ollama pull</code>.</td></tr>
+            </table>
+            <div class="help-tip">For dual P40 GPUs, target 2× 30B Qwen or 1× 70B Qwen. Set <code>DEFAULT_MODEL</code> and <code>EXTRACT_MODEL</code> in <code>docker-compose.yml</code>.</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Supported file formats</h3>
+            <p>PDF, DOCX, XLSX, XLS, CSV, TXT, MD, and IEC 61131-3 PLC source files (.st, .scl, .lad, .fbd, .il, .sfc). Maximum file size: 20 MB.</p>
+          </div>
+
+        </div>
+        <div class="modal-foot" style="justify-content:flex-end">
+          <button class="wb-chat-btn" id="help-close-btn">Close</button>
+        </div>
+      </div>
 
     </div>
   </div>

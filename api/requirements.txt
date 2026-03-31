@@ -10,3 +10,4 @@ openpyxl==3.1.5
 beautifulsoup4==4.12.3
 python-multipart==0.0.20
 pynvml==11.5.0
+psutil==6.1.1

@@ -3,6 +3,9 @@ routers/health.py — System health, model management, and GPU endpoints.
 """
 from fastapi import APIRouter, HTTPException, Request
 
+import psutil
+psutil.cpu_percent()  # prime interval counter so first real call is accurate
+
 import config
 import ollama
 
@@ -31,6 +34,17 @@ async def models():
 @router.get("/gpu")
 async def gpu():
     return ollama.gpu_stats()
+
+
+@router.get("/system")
+async def system():
+    mem = psutil.virtual_memory()
+    return {
+        "ok":       True,
+        "cpu_util": int(psutil.cpu_percent(interval=None)),
+        "mem_used": mem.used,
+        "mem_total": mem.total,
+    }
 
 
 @router.get("/model-status")

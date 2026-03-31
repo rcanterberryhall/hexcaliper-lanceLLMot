@@ -154,10 +154,27 @@ class ExtractionResult:
 
 # ── Prompt construction ────────────────────────────────────────────────────────
 
-_VOCAB_BLOCK = "\n".join(f"  - {c}" for c in CONCEPT_VOCAB)
 _ROLES_BLOCK = ", ".join(DOC_ROLES)
 
-_SYSTEM_PROMPT = f"""You are a functional-safety document analyst.
+
+def _build_system_prompt(extra_vocab: list[str] | None = None) -> str:
+    """
+    Build the extraction system prompt, merging the seeded vocabulary with any
+    concepts already learned from previously ingested documents.
+
+    :param extra_vocab: Learned concept labels from the graph DB.  These are
+                        merged with ``CONCEPT_VOCAB`` and deduplicated so the
+                        model sees the full accumulated vocabulary.
+    """
+    merged = list(CONCEPT_VOCAB)
+    if extra_vocab:
+        existing = set(merged)
+        for c in extra_vocab:
+            if c not in existing:
+                merged.append(c)
+                existing.add(c)
+    vocab_block = "\n".join(f"  - {c}" for c in merged)
+    return f"""You are a functional-safety document analyst.
 Your task is to extract structured metadata from a document chunk.
 Return ONLY a JSON object — no prose, no markdown fences, no explanation.
 
@@ -172,7 +189,7 @@ JSON schema (all fields required):
 
 Concept selection rules:
 1. Prefer terms from this vocabulary when they apply:
-{_VOCAB_BLOCK}
+{vocab_block}
 2. If a concept is genuinely not in the vocabulary, add a new lowercase term.
 3. Only include concepts that are meaningfully present — not every term above will apply.
 4. Return 3-7 concepts per chunk; fewer is better than padding with weak matches.
@@ -240,6 +257,7 @@ async def extract_chunk(
     text: str,
     doc_type: str = "",
     model: str = "",
+    learned_vocab: list[str] | None = None,
 ) -> ExtractionResult:
     """
     Extract concepts, entities, document role, and key assertion from a chunk.
@@ -258,7 +276,7 @@ async def extract_chunk(
     """
     m = model or EXTRACT_MODEL
     messages = [
-        {"role": "system", "content": _SYSTEM_PROMPT},
+        {"role": "system", "content": _build_system_prompt(learned_vocab)},
         {"role": "user",   "content": _build_user_prompt(text, doc_type)},
     ]
     try:
@@ -279,6 +297,7 @@ async def extract_chunks_batch(
     chunks: list[str],
     doc_type: str = "",
     model: str = "",
+    learned_vocab: list[str] | None = None,
 ) -> list[ExtractionResult]:
     """
     Extract metadata for a list of chunks sequentially.
@@ -286,13 +305,16 @@ async def extract_chunks_batch(
     Sequential rather than concurrent to avoid overloading a single Ollama
     instance.  Each call is independently fault-tolerant.
 
-    :param chunks:   List of chunk texts.
-    :param doc_type: Document type hint passed to each ``extract_chunk`` call.
-    :param model:    Ollama model override.
-    :return:         List of ``ExtractionResult`` objects, one per chunk.
+    :param chunks:        List of chunk texts.
+    :param doc_type:      Document type hint passed to each ``extract_chunk`` call.
+    :param model:         Ollama model override.
+    :param learned_vocab: Accumulated concept vocabulary from the graph DB;
+                          merged with the seeded vocab in the prompt.
+    :return:              List of ``ExtractionResult`` objects, one per chunk.
     """
     results = []
     for chunk in chunks:
-        result = await extract_chunk(chunk, doc_type=doc_type, model=model)
+        result = await extract_chunk(chunk, doc_type=doc_type, model=model,
+                                     learned_vocab=learned_vocab)
         results.append(result)
     return results

@@ -8,7 +8,7 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # COPY libnvidia-ml.so.1 /usr/local/lib/libnvidia-ml.so.1  # uncomment when P40s are installed (or run setup_gpu.sh)
-COPY app.py rag.py web_fetch.py web_search.py copyright_extract.py .
+COPY . .
 
 EXPOSE 8000
 
