@@ -26,9 +26,9 @@ services:
       REQUEST_TIMEOUT_SECONDS: "120"
     volumes:
       - ./data:/app/data
-    devices:
-      - /dev/nvidiactl:/dev/nvidiactl
-      - /dev/nvidia0:/dev/nvidia0
+    # devices:  # uncomment when P40s are installed (or run setup_gpu.sh)
+    #   - /dev/nvidiactl:/dev/nvidiactl
+    #   - /dev/nvidia0:/dev/nvidia0
     restart: unless-stopped
     networks:
       - app
