@@ -99,10 +99,11 @@
         </div>
       </header>
 
-      <!-- Tab bar — switches between Chat and Workbench views -->
+      <!-- Tab bar — switches between Chat, Workbench, and Library views -->
       <div id="tab-bar">
         <button class="tab-btn active" data-tab="chat">Chat</button>
         <button class="tab-btn"        data-tab="workbench">Workbench</button>
+        <button class="tab-btn"        data-tab="library">Library</button>
       </div>
 
       <!-- Dismissible notification banner; data-level controls colour (error/warning/info) -->
@@ -215,6 +216,175 @@
 
       </div>
 
+      <!-- ── Library view ── -->
+      <div id="library-view" hidden>
+
+        <!-- Sub-tab bar: Browse / Acquisition / Escalation / Connections -->
+        <div id="lib-sub-bar">
+          <button class="lib-sub-btn active" data-subtab="browse">Browse</button>
+          <button class="lib-sub-btn"        data-subtab="acquisition">Acquisition</button>
+          <button class="lib-sub-btn"        data-subtab="escalation">Escalation <span id="esc-badge" class="esc-badge" hidden></span></button>
+          <button class="lib-sub-btn"        data-subtab="connections">Connections</button>
+        </div>
+
+        <!-- Browse sub-view -->
+        <div id="lib-browse" class="lib-sub-view">
+          <!-- Left: category tree (grouped by doc_type) -->
+          <div class="lib-tree-panel">
+            <div class="lib-tree-head">
+              <span class="lib-tree-title">Category</span>
+              <button id="lib-refresh-btn" class="icon-btn" title="Refresh library">↻</button>
+            </div>
+            <div id="lib-mfr-tree"></div>
+          </div>
+
+          <!-- Right: document list -->
+          <div class="lib-content">
+            <div class="lib-filter-bar">
+              <select id="lib-doctype-filter">
+                <option value="">All sources</option>
+                <!-- Populated dynamically from loaded items -->
+              </select>
+              <button id="lib-add-btn" class="icon-btn" title="Manually register a file already on disk">+ Add</button>
+            </div>
+            <div class="lib-table-wrap">
+              <table class="lib-table">
+                <thead>
+                  <tr>
+                    <th>Filename</th><th>Source</th><th>Version</th><th>Date</th><th>Indexed</th><th></th>
+                  </tr>
+                </thead>
+                <tbody id="lib-item-tbody">
+                  <tr class="lib-empty-row"><td colspan="6">Select a category to view documents.</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <!-- Acquisition sub-view -->
+        <div id="lib-acquisition" class="lib-sub-view acq-layout" hidden>
+
+          <!-- Left: Active / In-progress items (SSE-driven) -->
+          <div class="acq-panel acq-active-panel">
+            <div class="acq-panel-head">
+              <span class="acq-panel-title">Active</span>
+              <span id="acq-sse-dot" class="acq-sse-dot" title="SSE disconnected"></span>
+            </div>
+            <div id="acq-active-list" class="acq-list">
+              <p class="acq-empty-msg">No active jobs.</p>
+            </div>
+          </div>
+
+          <!-- Right: Pending approval items -->
+          <div class="acq-panel acq-pending-panel">
+            <div class="acq-panel-head">
+              <span class="acq-panel-title">Pending Approval</span>
+              <button id="acq-add-btn" class="icon-btn" title="Request documentation for a product">+ Request</button>
+            </div>
+            <div id="acq-pending-list" class="acq-list">
+              <p class="acq-empty-msg">No items waiting for approval.</p>
+            </div>
+            <div class="acq-panel-foot">
+              <button id="acq-approve-all-btn" class="wb-chat-btn">Approve All</button>
+            </div>
+          </div>
+
+          <!-- Request dialog -->
+          <div id="acq-request-backdrop" class="modal-backdrop" hidden></div>
+          <div id="acq-request-modal" class="modal" hidden>
+            <div class="modal-head">
+              <span class="modal-head-title">REQUEST DOCUMENTATION</span>
+              <button class="modal-close" id="acq-request-close">✕</button>
+            </div>
+            <div class="modal-body">
+              <div class="acq-form-row">
+                <label>Manufacturer</label>
+                <input type="text" id="acq-mfr-input" placeholder="e.g. Beckhoff" list="acq-mfr-list" autocomplete="off" />
+                <datalist id="acq-mfr-list">
+                  <option value="Beckhoff">
+                  <option value="Allen Bradley">
+                  <option value="Siemens">
+                  <option value="Danfoss">
+                  <option value="ABB">
+                  <option value="Yaskawa">
+                </datalist>
+              </div>
+              <div class="acq-form-row">
+                <label>Product ID</label>
+                <input type="text" id="acq-product-input" placeholder="e.g. EL1008" />
+              </div>
+              <div class="acq-form-row">
+                <label>Doc type (optional)</label>
+                <select id="acq-doctype-select">
+                  <option value="">Any</option>
+                  <option value="manual">Manual</option>
+                  <option value="datasheet">Datasheet</option>
+                  <option value="firmware_notes">Firmware Notes</option>
+                  <option value="app_note">App Note</option>
+                  <option value="mounting">Mounting</option>
+                </select>
+              </div>
+              <div class="acq-form-row">
+                <label>Source URL (optional)</label>
+                <input type="url" id="acq-url-input" placeholder="Direct PDF or product page URL" />
+              </div>
+              <div class="acq-form-row">
+                <label>Reason (optional)</label>
+                <input type="text" id="acq-reason-input" placeholder="Why is this needed?" />
+              </div>
+            </div>
+            <div class="modal-foot" style="justify-content:flex-end; gap:8px">
+              <button class="icon-btn" id="acq-request-cancel">Cancel</button>
+              <button class="wb-chat-btn" id="acq-request-submit">Add to Queue</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Escalation sub-view -->
+        <div id="lib-escalation" class="lib-sub-view acq-layout" hidden>
+
+          <!-- Left: Active / complete / failed escalations (SSE-driven) -->
+          <div class="acq-panel acq-active-panel">
+            <div class="acq-panel-head">
+              <span class="acq-panel-title">Responses</span>
+              <span id="esc-sse-dot" class="acq-sse-dot" title="SSE disconnected"></span>
+            </div>
+            <div id="esc-active-list" class="acq-list">
+              <p class="acq-empty-msg">No escalations yet.</p>
+            </div>
+          </div>
+
+          <!-- Right: Pending approval items -->
+          <div class="acq-panel acq-pending-panel">
+            <div class="acq-panel-head">
+              <span class="acq-panel-title">Pending Approval</span>
+            </div>
+            <div class="esc-privacy-notice">
+              <strong>Privacy:</strong> Approving sends the query to an external cloud model
+              (<span id="esc-provider-label">Anthropic</span>).
+              Items with client documents always require manual approval.
+            </div>
+            <div id="esc-pending-list" class="acq-list">
+              <p class="acq-empty-msg">No items waiting for approval.</p>
+            </div>
+            <div class="acq-panel-foot">
+              <button id="esc-approve-all-btn" class="wb-chat-btn" disabled>Approve All Public</button>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Connections sub-view -->
+        <div id="lib-connections" class="lib-sub-view conn-layout" hidden>
+          <div id="conn-list" class="conn-list">
+            <p class="acq-empty-msg">Loading…</p>
+          </div>
+        </div>
+
+      </div>
+
       <!-- ── Manage Library modal ── -->
       <div id="wb-manage-backdrop" class="modal-backdrop" hidden></div>
       <div id="wb-manage-modal" class="modal" hidden>
@@ -237,6 +407,48 @@
         </div>
       </div>
 
+      <!-- ── Library upload modal ── -->
+      <div id="lib-upload-backdrop" class="modal-backdrop" hidden></div>
+      <div id="lib-upload-modal" class="modal" hidden>
+        <div class="modal-head">
+          <span class="modal-head-title">ADD TO LIBRARY</span>
+          <button class="modal-close" id="lib-upload-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <div class="acq-form-row">
+            <label>Source <span class="form-hint">(manufacturer, standards body, client, "General"…)</span></label>
+            <input type="text" id="lib-up-source" placeholder="e.g. Beckhoff, ISO, TUV, General" autocomplete="off" />
+          </div>
+          <div class="acq-form-row">
+            <label>Reference <span class="form-hint">(product ID, standard number — optional)</span></label>
+            <input type="text" id="lib-up-ref" placeholder="e.g. EL1008, IEC 61508-1" autocomplete="off" />
+          </div>
+          <div class="acq-form-row">
+            <label>Document type</label>
+            <select id="lib-up-doctype">
+              <option value="technical_manual">Technical Manual</option>
+              <option value="datasheet">Datasheet</option>
+              <option value="standard">Standard</option>
+              <option value="firmware_notes">Firmware Notes</option>
+              <option value="app_note">App Note</option>
+              <option value="misc">Misc</option>
+            </select>
+          </div>
+          <div class="acq-form-row">
+            <label>Version <span class="form-hint">(optional)</span></label>
+            <input type="text" id="lib-up-version" placeholder="e.g. 2.0, Rev B" autocomplete="off" />
+          </div>
+          <div class="acq-form-row">
+            <label>File</label>
+            <input type="file" id="lib-up-file" accept=".pdf,.docx,.xlsx,.xls,.csv,.txt,.md" />
+          </div>
+        </div>
+        <div class="modal-foot" style="justify-content:flex-end; gap:8px">
+          <button class="icon-btn" id="lib-upload-cancel">Cancel</button>
+          <button class="wb-chat-btn" id="lib-upload-submit">Upload</button>
+        </div>
+      </div>
+
       <!-- ── Help modal ── -->
       <div id="help-backdrop" class="modal-backdrop" hidden></div>
       <div id="help-modal" class="modal help-modal" hidden>
@@ -248,9 +460,9 @@
 
           <div class="help-section">
             <h3>Overview</h3>
-            <p>Hexcaliper is a self-hosted AI workbench for safety engineering document analysis. It runs entirely on your local infrastructure via Ollama — no data leaves your network.</p>
+            <p>Hexcaliper is a self-hosted AI workbench for safety engineering document analysis. It runs entirely on your local infrastructure via Ollama — no data leaves your network unless you explicitly approve it.</p>
             <p>Upload ISO/IEC standards, contracts, THEOPs, FMEAs, hazard analyses, FAT/SAT test records, PLC code, and correspondence. The AI connects documents by shared safety concepts (diagnostic coverage, SIL, safe state, etc.) so you can ask cross-document questions like <em>"Does this THEOP clause comply with IEC 61508 SIL 2?"</em></p>
-            <div class="help-tip">All analysis runs locally. Your documents and conversations never leave your server.</div>
+            <div class="help-tip">All analysis runs locally. Documents and conversations never leave your server unless you use the Cloud Escalation feature.</div>
           </div>
 
           <div class="help-section">
@@ -261,6 +473,7 @@
               <tr><td>+ New Chat</td><td>Start a fresh conversation. Clears chat history and chat-scoped documents.</td></tr>
               <tr><td>⚙ (system prompt)</td><td>Set an optional system prompt to give the AI a persona or specific instructions for this conversation.</td></tr>
               <tr><td>Send / ■ Stop</td><td>Send your message. While the AI is responding, the button becomes <strong>■ Stop</strong> to cancel mid-stream.</td></tr>
+              <tr><td>Escalate →</td><td>Appears below each assistant response. Sends the query to a cloud model (Anthropic/OpenAI) for a second opinion. Always requires manual approval if client documents were in context.</td></tr>
               <tr><td>Global Documents +</td><td>Upload a document visible across all conversations (global scope). Good for standards and reference material.</td></tr>
               <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started.</td></tr>
             </table>
@@ -279,6 +492,7 @@
               <tr><td>Type filter</td><td>Filter the document list by document type.</td></tr>
               <tr><td>Upload as / + Upload</td><td>Upload a document to the selected scope with the chosen type.</td></tr>
               <tr><td>Open in Chat</td><td>Switch to Chat tab with this project's full document scope loaded as context.</td></tr>
+              <tr><td>✎ (row)</td><td>Edit the document's filename, type, and classification inline without re-uploading.</td></tr>
               <tr><td>✕ (row)</td><td>Delete a document. Removes it from storage and the knowledge graph. Requires confirmation.</td></tr>
             </table>
           </div>
@@ -308,8 +522,35 @@
               <tr><td>contract</td><td>Client contracts and purchase orders</td></tr>
               <tr><td>correspondence</td><td>Emails, letters, meeting minutes related to a project</td></tr>
               <tr><td>plc_code</td><td>IEC 61131-3 source code (ST, LAD, FBD, SFC, IL)</td></tr>
+              <tr><td>technical_manual</td><td>Technical or operating manual (manufacturer documentation)</td></tr>
+              <tr><td>datasheet</td><td>Product datasheet or technical data sheet</td></tr>
+              <tr><td>firmware_notes</td><td>Firmware release notes or changelog</td></tr>
+              <tr><td>app_note</td><td>Application note or programming example</td></tr>
               <tr><td>misc</td><td>Any other document</td></tr>
             </table>
+            <div class="help-tip">Document type can be changed after upload using the ✎ edit button in the Workbench table.</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Library tab</h3>
+            <p>The technical document library holds manufacturer manuals, datasheets, standards, and other reference documents acquired automatically or added manually.</p>
+            <table class="help-table">
+              <tr><th>Sub-tab</th><th>What it does</th></tr>
+              <tr><td>Browse</td><td>Browse documents by category (Standards, Manuals, Datasheets, etc.). Filter by source within each category.</td></tr>
+              <tr><td>Acquisition</td><td>Request documentation for a product. The scraper fetches it automatically after approval. If nothing is found, an escalation is queued automatically.</td></tr>
+              <tr><td>Escalation</td><td>Send a query to a cloud model for a second opinion. Shows pending approvals, active calls, and completed responses. Cached hits are served instantly without a cloud call.</td></tr>
+              <tr><td>Connections</td><td>Configure M-Files, SharePoint, and WebDAV connections. Test connectivity and index an M-Files vault into the library.</td></tr>
+            </table>
+            <div class="help-tip">M-Files-sourced documents are always treated as client-confidential and are excluded from public library views.</div>
+          </div>
+
+          <div class="help-section">
+            <h3>Document classification</h3>
+            <dl class="help-kv">
+              <dt>Public</dt><dd>Technical library documents (manufacturer manuals, standards). Eligible for auto-escalation when <code>AUTO_ESCALATE=true</code>.</dd>
+              <dt>Client</dt><dd>Any client or project file, or anything sourced from M-Files. Cloud escalation always requires explicit manual approval. Never exposed in the public library view.</dd>
+            </dl>
+            <p>Classification is set automatically at upload based on scope and source, and can be changed afterwards using the ✎ edit button (except for client- and project-scoped documents, which are always client-confidential).</p>
           </div>
 
           <div class="help-section">
@@ -343,6 +584,12 @@
         <div class="modal-foot" style="justify-content:flex-end">
           <button class="wb-chat-btn" id="help-close-btn">Close</button>
         </div>
+      </div>
+
+      <!-- ── Status bar ── -->
+      <div id="status-bar">
+        <div id="status-spinner" class="status-spinner"></div>
+        <span id="status-msg">Ready</span>
       </div>
 
     </div>

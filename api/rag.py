@@ -8,6 +8,7 @@ and an optional *scope_id* so that search results can be filtered
 appropriately for each request.
 """
 
+import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Optional
 
@@ -31,6 +32,13 @@ DISTANCE_THRESHOLD = 0.45
 
 # Lazily initialised ChromaDB collection (singleton).
 _collection = None
+
+# Separate collection for the escalation semantic cache.
+_cache_collection = None
+
+# Cosine distance threshold for a cache hit (distance = 1 − similarity).
+# 0.08 ≈ cosine similarity ≥ 0.92 — require near-identical queries.
+CACHE_DISTANCE_THRESHOLD = 0.08
 
 
 # ── ChromaDB ───────────────────────────────────────────────────
@@ -374,6 +382,22 @@ def get_doc_chunks(doc_id: str) -> list[tuple[str, str]]:
         return []
 
 
+def update_chunk_scope(doc_id: str, scope_type: str, scope_id: Optional[str]) -> None:
+    """Update scope metadata on all ChromaDB chunks for a document."""
+    col = get_collection()
+    try:
+        results = col.get(where={"doc_id": doc_id}, include=["metadatas"])
+    except Exception:
+        return
+    if not results["ids"]:
+        return
+    new_metas = [
+        {**m, "scope_type": scope_type, "scope_id": scope_id or ""}
+        for m in results["metadatas"]
+    ]
+    col.update(ids=results["ids"], metadatas=new_metas)
+
+
 def delete_chunks(doc_id: str) -> None:
     """
     Delete all ChromaDB chunks associated with a document.
@@ -413,3 +437,62 @@ def get_chunks_by_ids(chunk_ids: list[str]) -> dict[str, str]:
         }
     except Exception:
         return {}
+
+
+# ── Escalation cache ───────────────────────────────────────────
+
+def _get_cache_collection():
+    """Return the escalation_cache ChromaDB collection (singleton)."""
+    global _cache_collection
+    if _cache_collection is None:
+        client = chromadb.PersistentClient(path=config.CHROMA_PATH)
+        _cache_collection = client.get_or_create_collection(
+            "escalation_cache",
+            metadata={"hnsw:space": "cosine"},
+        )
+    return _cache_collection
+
+
+async def search_escalation_cache(query_text: str) -> Optional[str]:
+    """
+    Search the escalation cache for a semantically similar previous response.
+
+    Embeds *query_text* and queries the ``escalation_cache`` collection.
+    Returns the cached response string if the nearest result is within
+    :data:`CACHE_DISTANCE_THRESHOLD`, otherwise ``None``.
+
+    :param query_text: The query to look up.
+    :return: Cached response text, or ``None`` if no sufficiently similar entry exists.
+    """
+    col = _get_cache_collection()
+    if col.count() == 0:
+        return None
+    embedding = await embed(query_text)
+    results = col.query(
+        query_embeddings=[embedding],
+        n_results=1,
+        include=["metadatas", "distances"],
+    )
+    if not results["ids"] or not results["ids"][0]:
+        return None
+    distance = results["distances"][0][0]
+    if distance <= CACHE_DISTANCE_THRESHOLD:
+        return results["metadatas"][0][0].get("response", "")
+    return None
+
+
+async def store_escalation_cache(query_text: str, response_text: str) -> None:
+    """
+    Store a query/response pair in the escalation cache for future reuse.
+
+    :param query_text:    The original query that was sent to the cloud model.
+    :param response_text: The cloud model's response.
+    """
+    col = _get_cache_collection()
+    embedding = await embed(query_text)
+    col.add(
+        ids=[str(_uuid.uuid4())],
+        embeddings=[embedding],
+        documents=[query_text],
+        metadatas=[{"response": response_text, "query_preview": query_text[:200]}],
+    )

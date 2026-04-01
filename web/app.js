@@ -26,6 +26,9 @@ const errorBarDismiss = document.getElementById('error-bar-dismiss');
 const systemPromptWrap = document.getElementById('system-prompt-wrap');
 const systemPromptInput = document.getElementById('system-prompt');
 const systemBtn         = document.getElementById('system-btn');
+const statusBar         = document.getElementById('status-bar');
+const statusSpinner     = document.getElementById('status-spinner');
+const statusMsg         = document.getElementById('status-msg');
 
 let currentConvId = null;
 let abortController = null;
@@ -115,6 +118,55 @@ function scrollToBottom() {
  * @param {HTMLElement} bubble - The bubble whose ``innerText`` is copied.
  * @return {void}
  */
+/**
+ * Appends an "Escalate →" button to an AI message, allowing the user to send
+ * the query to a cloud model via the escalation queue.
+ */
+function addEscalateBtn(inner, convId, queryText, docIds, hasClientDocs) {
+  const btn = document.createElement('button');
+  btn.className = 'escalate-btn';
+  btn.textContent = 'Escalate →';
+  btn.title = hasClientDocs
+    ? 'Send to cloud model — requires manual approval (client documents in context)'
+    : 'Send to cloud model for a second opinion';
+  btn.addEventListener('click', async () => {
+    btn.disabled = true;
+    btn.textContent = 'Queuing…';
+    try {
+      const res = await fetch('/api/escalation/queue', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          query_text:      queryText,
+          source_doc_ids:  docIds,
+          has_client_docs: hasClientDocs,
+          conversation_id: convId,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        btn.textContent = data.auto_approved ? '✓ Auto-approved' : '✓ Pending approval';
+        setStatus(
+          data.auto_approved
+            ? 'Escalation queued and auto-approved.'
+            : 'Escalation queued — awaiting approval in Library → Escalation.',
+          'info',
+        );
+      } else {
+        const err = await res.json().catch(() => ({}));
+        btn.disabled = false;
+        btn.textContent = 'Escalate →';
+        setStatus(err.detail || 'Escalation failed.', 'error');
+      }
+    } catch {
+      btn.disabled = false;
+      btn.textContent = 'Escalate →';
+      setStatus('Escalation failed — network error.', 'error');
+    }
+  });
+  inner.appendChild(btn);
+}
+
 function addCopyBtn(inner, bubble) {
   const btn = document.createElement('button');
   btn.className = 'copy-btn';
@@ -629,6 +681,7 @@ async function _uploadDoc(file, listEl, conversationId) {
   modelDotLabel.textContent = 'Busy…';
   modelDotLabel.className = 'model-dot-label';
   gpuFastInterval = setInterval(pollGpu, 500);
+  setStatus(`Uploading ${file.name}…`, 'busy');
 
   try {
     const body = new FormData();
@@ -642,6 +695,7 @@ async function _uploadDoc(file, listEl, conversationId) {
       xhr.open('POST', url);
       xhr.upload.addEventListener('load', () => {
         pname.textContent = `Processing ${file.name}…`;
+        setStatus(`Processing ${file.name}…`, 'busy');
       });
       xhr.addEventListener('load', () => {
         if (xhr.status >= 200 && xhr.status < 300) {
@@ -655,8 +709,9 @@ async function _uploadDoc(file, listEl, conversationId) {
       xhr.addEventListener('error', () => reject(new Error('Network error during upload')));
       xhr.send(body);
     });
+    setStatus(`✓ ${file.name} uploaded`, 'info');
   } catch (err) {
-    alert(err.message);
+    setStatus(err.message, 'error');
   } finally {
     uploadInProgress = false;
     clearInterval(gpuFastInterval);
@@ -881,6 +936,7 @@ form.addEventListener('submit', async (e) => {
       bubble.innerHTML = renderMarkdown(rawText);
       addMeta(inner, doneData.model, doneData.sources);
       addCopyBtn(inner, bubble);
+      addEscalateBtn(inner, doneData.conversation_id, message, doneData.doc_ids || [], doneData.has_client_docs || false);
       if (!currentConvId) {
         currentConvId = doneData.conversation_id;
         await fetchConversations();
@@ -1025,6 +1081,29 @@ function clearErrorBar() {
 
 errorBarDismiss.addEventListener('click', clearErrorBar);
 
+// ── Status bar ────────────────────────────────────────────────
+let _statusClearTimer = null;
+
+/**
+ * Updates the bottom status bar with a message and optional severity level.
+ * Non-error messages auto-clear after 5 s; errors persist until replaced.
+ *
+ * @param {string} msg - Message to display.
+ * @param {'info'|'warning'|'error'|'busy'} [level='info']
+ */
+function setStatus(msg, level = 'info') {
+  clearTimeout(_statusClearTimer);
+  statusMsg.textContent = msg;
+  statusBar.dataset.level = level === 'busy' ? 'info' : level;
+  statusSpinner.classList.toggle('on', level === 'busy');
+  if (level !== 'error' && level !== 'busy') {
+    _statusClearTimer = setTimeout(() => {
+      statusMsg.textContent = 'Ready';
+      delete statusBar.dataset.level;
+    }, 5000);
+  }
+}
+
 // ── Model status dot ──────────────────────────────────────────
 /**
  * Polls the model-status endpoint and updates the status dot in the toolbar.
@@ -1131,6 +1210,7 @@ refreshModelsBtn.addEventListener('click', async () => {
 const tabBar         = document.getElementById('tab-bar');
 const chatView       = document.getElementById('chat-view');
 const workbenchView  = document.getElementById('workbench-view');
+const libraryView    = document.getElementById('library-view');
 
 tabBar.addEventListener('click', e => {
   const btn = e.target.closest('.tab-btn');
@@ -1140,7 +1220,9 @@ tabBar.addEventListener('click', e => {
   const tab = btn.dataset.tab;
   chatView.hidden      = tab !== 'chat';
   workbenchView.hidden = tab !== 'workbench';
+  libraryView.hidden   = tab !== 'library';
   if (tab === 'workbench') loadWorkbench();
+  if (tab === 'library')   loadLibrary();
 });
 
 // ── Workbench ─────────────────────────────────────────────────
@@ -1171,8 +1253,8 @@ function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').r
 
 async function loadWorkbench() {
   const [cr, pr] = await Promise.all([
-    fetch('/api/library/clients').catch(() => null),
-    fetch('/api/library/projects').catch(() => null),
+    fetch('/api/workspace/clients').catch(() => null),
+    fetch('/api/workspace/projects').catch(() => null),
   ]);
   wbClients     = cr?.ok ? await cr.json() : [];
   wbAllProjects = pr?.ok ? await pr.json() : [];
@@ -1231,6 +1313,16 @@ async function loadWbDocs() {
   renderWbDocs();
 }
 
+// Doc-type options shared between the upload selector and the inline edit form.
+const _WB_DOC_TYPE_OPTIONS = [
+  ['standard','Standard'], ['requirement','Requirement'], ['theop','THEOP'],
+  ['fmea','FMEA'], ['hazard_analysis','Hazard Analysis'], ['fat','FAT'],
+  ['sat','SAT'], ['contract','Contract'], ['correspondence','Correspondence'],
+  ['plc_code','PLC Code'], ['technical_manual','Technical Manual'],
+  ['datasheet','Datasheet'], ['firmware_notes','Firmware Notes'],
+  ['app_note','App Note'], ['misc','Misc'],
+];
+
 function renderWbDocs() {
   const filter = wbTypeFilter.value;
   const rows = wbDocs.filter(d => !filter || d.doc_type === filter);
@@ -1251,16 +1343,143 @@ function renderWbDocs() {
       <td><span class="scope-badge ${d.scope_type}">${d.scope_type}</span></td>
       <td>${date}</td>
       <td>${d.chunk_count}</td>
-      <td><button class="wb-del-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Delete document">✕</button></td>`;
+      <td class="wb-actions">
+        <button class="wb-edit-btn" data-id="${d.id}" title="Edit attributes">✎</button>
+        <button class="wb-del-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Delete document">✕</button>
+      </td>`;
     wbDocTbody.appendChild(tr);
   });
 }
 
+function _openWbEdit(tr, doc) {
+  // Build inline edit row, inserted immediately after the document row.
+  const editTr = document.createElement('tr');
+  editTr.className = 'wb-edit-row';
+
+  const typeOpts = _WB_DOC_TYPE_OPTIONS.map(([v, l]) =>
+    `<option value="${v}"${v === doc.doc_type ? ' selected' : ''}>${l}</option>`
+  ).join('');
+
+  // Scope selector: encode as "type:id" so it's a single <select>
+  const currentScopeVal = doc.scope_type === 'global' ? 'global:'
+    : `${doc.scope_type}:${doc.scope_id || ''}`;
+  const scopeOpts = [
+    `<option value="global:"${doc.scope_type === 'global' ? ' selected' : ''}>Global</option>`,
+    ...wbClients.map(c =>
+      `<option value="client:${_esc(c.id)}"${doc.scope_type === 'client' && doc.scope_id === c.id ? ' selected' : ''}>`
+      + `Client: ${_esc(c.name)}</option>`
+    ),
+    ...wbAllProjects.map(p => {
+      const cl = wbClients.find(c => c.id === p.client_id);
+      const lbl = cl ? `${_esc(p.name)} (${_esc(cl.name)})` : _esc(p.name);
+      return `<option value="project:${_esc(p.id)}"${doc.scope_type === 'project' && doc.scope_id === p.id ? ' selected' : ''}>`
+        + `Project: ${lbl}</option>`;
+    }),
+  ].join('');
+
+  // Classification — whether public is allowed depends on the *current* scope selection
+  function _buildClassOpts(scopeVal) {
+    const isRestricted = scopeVal.startsWith('client:') || scopeVal.startsWith('project:');
+    return [
+      `<option value="client"${doc.classification === 'client' || isRestricted ? ' selected' : ''}>Client (confidential)</option>`,
+      !isRestricted
+        ? `<option value="public"${doc.classification === 'public' ? ' selected' : ''}>Public</option>`
+        : '',
+    ].join('');
+  }
+
+  editTr.innerHTML = `<td colspan="6">
+    <div class="wb-edit-form">
+      <label class="wb-edit-label">Filename</label>
+      <input class="wb-edit-input" data-field="filename" value="${_esc(doc.filename)}" />
+      <label class="wb-edit-label">Type</label>
+      <select class="wb-edit-select" data-field="doc_type">${typeOpts}</select>
+      <label class="wb-edit-label">Scope</label>
+      <select class="wb-edit-select" data-field="scope">${scopeOpts}</select>
+      <label class="wb-edit-label">Classification</label>
+      <select class="wb-edit-select" data-field="classification">${_buildClassOpts(currentScopeVal)}</select>
+      <button class="wb-edit-save">Save</button>
+      <button class="wb-edit-cancel">Cancel</button>
+    </div>
+  </td>`;
+
+  tr.after(editTr);
+  tr.classList.add('wb-editing');
+  editTr.querySelector('.wb-edit-input').focus();
+
+  // When scope changes, rebuild classification options.
+  editTr.querySelector('[data-field="scope"]').addEventListener('change', e => {
+    const classSelect = editTr.querySelector('[data-field="classification"]');
+    classSelect.innerHTML = _buildClassOpts(e.target.value);
+  });
+
+  editTr.querySelector('.wb-edit-cancel').addEventListener('click', () => {
+    editTr.remove();
+    tr.classList.remove('wb-editing');
+  });
+
+  editTr.querySelector('.wb-edit-save').addEventListener('click', async () => {
+    const filename       = editTr.querySelector('[data-field="filename"]').value.trim();
+    const doc_type       = editTr.querySelector('[data-field="doc_type"]').value;
+    const classification = editTr.querySelector('[data-field="classification"]').value;
+    const scopeVal       = editTr.querySelector('[data-field="scope"]').value;
+    const [scope_type, scope_id] = scopeVal.split(':');
+
+    const saveBtn = editTr.querySelector('.wb-edit-save');
+    saveBtn.disabled = true;
+    saveBtn.textContent = 'Saving…';
+    try {
+      const res = await fetch(`/api/documents/${doc.id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          filename, doc_type, classification,
+          scope_type, scope_id: scope_id || null,
+        }),
+      });
+      if (res.ok) {
+        editTr.remove();
+        tr.classList.remove('wb-editing');
+        await loadWbDocs();
+        setStatus('Document updated.', 'info');
+      } else {
+        const err = await res.json().catch(() => ({}));
+        setStatus(err.detail || 'Failed to save changes.', 'error');
+        saveBtn.disabled = false;
+        saveBtn.textContent = 'Save';
+      }
+    } catch {
+      setStatus('Failed to save changes — network error.', 'error');
+      saveBtn.disabled = false;
+      saveBtn.textContent = 'Save';
+    }
+  });
+}
+
 wbDocTbody.addEventListener('click', async e => {
-  const btn = e.target.closest('.wb-del-btn');
-  if (!btn) return;
-  if (!confirm(`Delete "${btn.dataset.name}"?\n\nThis removes it permanently from the knowledge graph.`)) return;
-  const res = await fetch(`/api/documents/${btn.dataset.id}`, { method: 'DELETE' });
+  const editBtn = e.target.closest('.wb-edit-btn');
+  if (editBtn) {
+    const doc = wbDocs.find(d => d.id === editBtn.dataset.id);
+    if (!doc) return;
+    const tr = editBtn.closest('tr');
+    // Toggle: if already editing this row, cancel.
+    const existing = tr.nextElementSibling;
+    if (existing?.classList.contains('wb-edit-row')) {
+      existing.remove();
+      tr.classList.remove('wb-editing');
+      return;
+    }
+    // Close any other open edit rows first.
+    wbDocTbody.querySelectorAll('.wb-edit-row').forEach(r => r.remove());
+    wbDocTbody.querySelectorAll('.wb-editing').forEach(r => r.classList.remove('wb-editing'));
+    _openWbEdit(tr, doc);
+    return;
+  }
+
+  const delBtn = e.target.closest('.wb-del-btn');
+  if (!delBtn) return;
+  if (!confirm(`Delete "${delBtn.dataset.name}"?\n\nThis removes it permanently from the knowledge graph.`)) return;
+  const res = await fetch(`/api/documents/${delBtn.dataset.id}`, { method: 'DELETE' });
   if (res.ok) await loadWbDocs();
   else showErrorBar('Failed to delete document.');
 });
@@ -1273,6 +1492,7 @@ wbOpenChatBtn.addEventListener('click', () => {
   document.querySelector('.tab-btn[data-tab="chat"]').classList.add('active');
   chatView.hidden      = false;
   workbenchView.hidden = true;
+  libraryView.hidden   = true;
   newChat();
   chatView.dataset.projectId   = wbScope.projectId;
   chatView.dataset.projectName = wbScope.label;
@@ -1291,22 +1511,19 @@ wbDocUpload.addEventListener('change', async () => {
   else if (wbScope.type === 'client' && wbScope.clientId) fd.append('client_id', wbScope.clientId);
   // global: no scope param
 
-  wbUploadStatus.textContent = `Uploading ${file.name}…`;
+  setStatus(`Uploading ${file.name}…`, 'busy');
   try {
     const res = await fetch('/api/documents', { method: 'POST', body: fd });
     if (res.ok) {
-      wbUploadStatus.textContent = `✓ ${file.name} uploaded`;
+      setStatus(`✓ ${file.name} uploaded`, 'info');
       await loadWbDocs();
     } else {
       const err = await res.json().catch(() => ({}));
-      wbUploadStatus.textContent = '';
-      showErrorBar(err.detail || 'Upload failed.');
+      setStatus(err.detail || 'Upload failed.', 'error');
     }
   } catch {
-    wbUploadStatus.textContent = '';
-    showErrorBar('Upload failed.');
+    setStatus('Upload failed — network error.', 'error');
   }
-  setTimeout(() => { wbUploadStatus.textContent = ''; }, 4000);
   wbDocUpload.value = '';
 });
 
@@ -1342,7 +1559,7 @@ function renderManageModal() {
     delClientBtn.textContent = '✕';
     delClientBtn.addEventListener('click', async () => {
       if (!confirm(`Delete client "${c.name}" and all its projects?`)) return;
-      const res = await fetch(`/api/library/clients/${c.id}`, { method: 'DELETE' });
+      const res = await fetch(`/api/workspace/clients/${c.id}`, { method: 'DELETE' });
       if (res.ok) { await loadWorkbench(); renderManageModal(); }
       else showErrorBar('Failed to delete client.');
     });
@@ -1359,7 +1576,7 @@ function renderManageModal() {
       delProjBtn.textContent = '✕';
       delProjBtn.addEventListener('click', async () => {
         if (!confirm(`Delete project "${p.name}"?`)) return;
-        const res = await fetch(`/api/library/projects/${p.id}`, { method: 'DELETE' });
+        const res = await fetch(`/api/workspace/projects/${p.id}`, { method: 'DELETE' });
         if (res.ok) { await loadWorkbench(); renderManageModal(); }
         else showErrorBar('Failed to delete project.');
       });
@@ -1379,7 +1596,7 @@ function renderManageModal() {
     addProjBtn.addEventListener('click', async () => {
       const name = projInput.value.trim();
       if (!name) return;
-      const res = await fetch('/api/library/projects', {
+      const res = await fetch('/api/workspace/projects', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ name, client_id: c.id }),
       });
@@ -1402,7 +1619,7 @@ wbManageBackdrop.addEventListener('click', closeManageModal);
 wbAddClientBtn.addEventListener('click', async () => {
   const name = wbNewClientInput.value.trim();
   if (!name) return;
-  const res = await fetch('/api/library/clients', {
+  const res = await fetch('/api/workspace/clients', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name }),
   });
@@ -1479,7 +1696,1072 @@ helpCloseX.addEventListener('click', closeHelp);
 helpBackdrop.addEventListener('click', closeHelp);
 document.addEventListener('keydown', e => { if (e.key === 'Escape') { closeHelp(); closeManageModal(); } });
 
+// ── Library ───────────────────────────────────────────────────
+const libMfrTree       = document.getElementById('lib-mfr-tree');
+const libItemTbody     = document.getElementById('lib-item-tbody');
+const libDoctypeFilter = document.getElementById('lib-doctype-filter');
+const libRefreshBtn    = document.getElementById('lib-refresh-btn');
+const libAddBtn        = document.getElementById('lib-add-btn');
+const libSubBar        = document.getElementById('lib-sub-bar');
+
+let libItems         = [];
+let libActiveDocType = null;  // null = all categories
+
+// Display labels and preferred ordering for doc_type values.
+const _LIB_TYPE_LABELS = {
+  standard:       'Standards',
+  manual:         'Manuals',
+  datasheet:      'Datasheets',
+  firmware_notes: 'Firmware Notes',
+  app_note:       'App Notes',
+  mounting:       'Mounting',
+};
+const _LIB_TYPE_ORDER = ['standard', 'manual', 'datasheet', 'firmware_notes', 'app_note', 'mounting'];
+
+// Sub-tab switching
+libSubBar.addEventListener('click', e => {
+  const btn = e.target.closest('.lib-sub-btn');
+  if (!btn) return;
+  document.querySelectorAll('.lib-sub-btn').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  const subtab = btn.dataset.subtab;
+  document.getElementById('lib-browse').hidden      = subtab !== 'browse';
+  document.getElementById('lib-acquisition').hidden = subtab !== 'acquisition';
+  document.getElementById('lib-escalation').hidden  = subtab !== 'escalation';
+  document.getElementById('lib-connections').hidden = subtab !== 'connections';
+});
+
+async function loadLibrary() {
+  const ir = await fetch('/api/library/items').catch(() => null);
+  libItems = ir?.ok ? await ir.json() : [];
+  renderLibMfrTree();
+  renderLibItems();
+}
+
+function renderLibMfrTree() {
+  libMfrTree.innerHTML = '';
+
+  if (libItems.length === 0) {
+    libMfrTree.innerHTML = '<p class="lib-empty-msg">No items in library yet.</p>';
+    return;
+  }
+
+  // "All" row
+  const allRow = document.createElement('div');
+  allRow.className = 'lib-mfr-row' + (libActiveDocType === null ? ' active' : '');
+  allRow.innerHTML = `<span class="lib-mfr-name">◆ All</span><span class="lib-mfr-count">${libItems.length}</span>`;
+  allRow.addEventListener('click', () => { libActiveDocType = null; renderLibMfrTree(); renderLibItems(); });
+  libMfrTree.appendChild(allRow);
+
+  // Count items per doc_type
+  const typeCounts = {};
+  libItems.forEach(item => {
+    const t = item.doc_type || 'misc';
+    typeCounts[t] = (typeCounts[t] || 0) + 1;
+  });
+
+  // Render in preferred order, then any remaining types alphabetically
+  const ordered = _LIB_TYPE_ORDER.filter(t => typeCounts[t]);
+  Object.keys(typeCounts).sort().forEach(t => {
+    if (!ordered.includes(t)) ordered.push(t);
+  });
+
+  ordered.forEach(docType => {
+    const label = _LIB_TYPE_LABELS[docType] || docType;
+    const row = document.createElement('div');
+    row.className = 'lib-mfr-row' + (libActiveDocType === docType ? ' active' : '');
+    row.innerHTML = `<span class="lib-mfr-name">${_esc(label)}</span>`
+      + `<span class="lib-mfr-count">${typeCounts[docType]}</span>`;
+    row.addEventListener('click', () => {
+      libActiveDocType = docType;
+      renderLibMfrTree();
+      renderLibItems();
+    });
+    libMfrTree.appendChild(row);
+  });
+}
+
+function _updateLibMfrFilter(visibleItems) {
+  // Rebuild the source dropdown from the currently visible items.
+  const current = libDoctypeFilter.value;
+  const sources = [...new Set(visibleItems.map(i => i.manufacturer).filter(Boolean))].sort();
+  libDoctypeFilter.innerHTML = '<option value="">All sources</option>'
+    + sources.map(s => `<option value="${_esc(s)}"${s === current ? ' selected' : ''}>${_esc(s)}</option>`).join('');
+}
+
+function renderLibItems() {
+  const srcFilter = libDoctypeFilter.value;
+  let items = libActiveDocType
+    ? libItems.filter(i => (i.doc_type || 'misc') === libActiveDocType)
+    : libItems;
+
+  _updateLibMfrFilter(items);
+
+  if (srcFilter) items = items.filter(i => (i.manufacturer || '') === srcFilter);
+
+  if (items.length === 0) {
+    libItemTbody.innerHTML = '<tr class="lib-empty-row"><td colspan="6">'
+      + (libItems.length === 0 ? 'Library is empty.' : 'No documents match the filter.') + '</td></tr>';
+    return;
+  }
+
+  libItemTbody.innerHTML = items.map(item => {
+    const date = (item.updated_at || item.created_at || '').slice(0, 10);
+    const src  = item.product_id
+      ? `<span class="lib-src-cell"><span class="lib-src-mfr">${_esc(item.manufacturer || '—')}</span>`
+        + `<span class="lib-src-pid">${_esc(item.product_id)}</span></span>`
+      : `<span class="lib-src-mfr">${_esc(item.manufacturer || '—')}</span>`; // source only
+    const dot  = item.indexed
+      ? '<span class="lib-indexed-dot indexed" title="Indexed">●</span>'
+      : '<span class="lib-indexed-dot" title="Not indexed">○</span>';
+    const dl   = `<a class="lib-dl-btn" href="/api/library/items/${_esc(item.id)}/download" `
+      + `title="Download" download="${_esc(item.filename)}">↓</a>`;
+    const del  = `<button class="lib-del-btn" data-id="${_esc(item.id)}" `
+      + `data-name="${_esc(item.filename)}" title="Remove from library">✕</button>`;
+    return `<tr>
+      <td class="lib-filename" title="${_esc(item.filepath)}">${_esc(item.filename)}</td>
+      <td>${src}</td>
+      <td>${_esc(item.version || '—')}</td>
+      <td>${date || '—'}</td>
+      <td>${dot}</td>
+      <td class="lib-actions">${dl}${del}</td>
+    </tr>`;
+  }).join('');
+
+  // Delete buttons
+  libItemTbody.querySelectorAll('.lib-del-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const name = btn.dataset.name;
+      if (!confirm(`Remove "${name}" from the library?`)) return;
+      const res = await fetch(`/api/library/items/${btn.dataset.id}`, { method: 'DELETE' });
+      if (res.ok || res.status === 204) {
+        libItems = libItems.filter(i => i.id !== btn.dataset.id);
+        await loadLibrary();
+      } else {
+        showErrorBar('Failed to remove library item.');
+      }
+    });
+  });
+}
+
+libDoctypeFilter.addEventListener('change', renderLibItems);
+libRefreshBtn.addEventListener('click', loadLibrary);
+
+// ── Library upload modal ───────────────────────────────────────
+const libUploadBackdrop = document.getElementById('lib-upload-backdrop');
+const libUploadModal    = document.getElementById('lib-upload-modal');
+const libUploadClose    = document.getElementById('lib-upload-close');
+const libUploadCancel   = document.getElementById('lib-upload-cancel');
+const libUploadSubmit   = document.getElementById('lib-upload-submit');
+const libUpSource       = document.getElementById('lib-up-source');
+const libUpRef          = document.getElementById('lib-up-ref');
+const libUpDoctype      = document.getElementById('lib-up-doctype');
+const libUpVersion      = document.getElementById('lib-up-version');
+const libUpFile         = document.getElementById('lib-up-file');
+
+function openLibUpload() {
+  libUpSource.value  = '';
+  libUpRef.value     = '';
+  libUpVersion.value = '';
+  libUpFile.value    = '';
+  libUpDoctype.value = 'technical_manual';
+  libUploadBackdrop.hidden = false;
+  libUploadModal.hidden    = false;
+  libUpSource.focus();
+}
+function closeLibUpload() {
+  libUploadBackdrop.hidden = true;
+  libUploadModal.hidden    = true;
+}
+
+libAddBtn.addEventListener('click', openLibUpload);
+libUploadClose.addEventListener('click', closeLibUpload);
+libUploadCancel.addEventListener('click', closeLibUpload);
+libUploadBackdrop.addEventListener('click', closeLibUpload);
+
+libUploadSubmit.addEventListener('click', async () => {
+  const source = libUpSource.value.trim();
+  const file   = libUpFile.files[0];
+  if (!source) { setStatus('Source is required.', 'error'); return; }
+  if (!file)   { setStatus('Please select a file.', 'error'); return; }
+
+  const fd = new FormData();
+  fd.append('file',       file);
+  fd.append('source',     source);
+  fd.append('reference',  libUpRef.value.trim());
+  fd.append('doc_type',   libUpDoctype.value);
+  fd.append('version',    libUpVersion.value.trim());
+
+  libUploadSubmit.disabled    = true;
+  libUploadSubmit.textContent = 'Uploading…';
+  try {
+    const res = await fetch('/api/library/items/upload', { method: 'POST', body: fd });
+    if (res.ok) {
+      closeLibUpload();
+      await loadLibrary();
+      setStatus('File added to library.', 'info');
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setStatus(err.detail || 'Upload failed.', 'error');
+    }
+  } catch {
+    setStatus('Upload failed — network error.', 'error');
+  } finally {
+    libUploadSubmit.disabled    = false;
+    libUploadSubmit.textContent = 'Upload';
+  }
+});
+
+// ── Acquisition ───────────────────────────────────────────────
+const acqActiveList     = document.getElementById('acq-active-list');
+const acqPendingList    = document.getElementById('acq-pending-list');
+const acqSseDot         = document.getElementById('acq-sse-dot');
+const acqAddBtn         = document.getElementById('acq-add-btn');
+const acqApproveAllBtn  = document.getElementById('acq-approve-all-btn');
+const acqRequestBackdrop = document.getElementById('acq-request-backdrop');
+const acqRequestModal   = document.getElementById('acq-request-modal');
+const acqRequestClose   = document.getElementById('acq-request-close');
+const acqRequestCancel  = document.getElementById('acq-request-cancel');
+const acqRequestSubmit  = document.getElementById('acq-request-submit');
+const acqMfrInput       = document.getElementById('acq-mfr-input');
+const acqProductInput   = document.getElementById('acq-product-input');
+const acqDoctypeSelect  = document.getElementById('acq-doctype-select');
+const acqUrlInput       = document.getElementById('acq-url-input');
+const acqReasonInput    = document.getElementById('acq-reason-input');
+
+let acqQueue   = [];       // all queue items
+let acqSse     = null;     // EventSource instance
+// item_id → { el, filesEl, statusEl } for active job cards
+const acqActiveCards = new Map();
+
+async function loadAcquisitionQueue() {
+  const r = await fetch('/api/acquisition/queue').catch(() => null);
+  acqQueue = r?.ok ? await r.json() : [];
+  renderAcqPending();
+  renderAcqActive();
+}
+
+function renderAcqPending() {
+  const pending = acqQueue.filter(i => i.status === 'pending_approval');
+  if (pending.length === 0) {
+    acqPendingList.innerHTML = '<p class="acq-empty-msg">No items waiting for approval.</p>';
+    acqApproveAllBtn.disabled = true;
+    return;
+  }
+  acqApproveAllBtn.disabled = false;
+  acqPendingList.innerHTML = pending.map(item => `
+    <div class="acq-card" data-id="${_esc(item.id)}">
+      <div class="acq-card-head">
+        <span class="acq-card-pid">${_esc(item.manufacturer)} · ${_esc(item.product_id)}</span>
+        ${item.doc_type ? `<span class="lib-type-badge">${_esc(item.doc_type)}</span>` : ''}
+      </div>
+      ${item.reason ? `<div class="acq-card-reason">${_esc(item.reason)}</div>` : ''}
+      ${item.source_url ? `<div class="acq-card-url"><a href="${_esc(item.source_url)}" target="_blank" rel="noopener">${_esc(item.source_url)}</a></div>` : ''}
+      <div class="acq-card-actions">
+        <button class="wb-chat-btn acq-approve-btn" data-id="${_esc(item.id)}">Approve</button>
+        <button class="wb-del-btn acq-reject-btn" data-id="${_esc(item.id)}">Reject</button>
+      </div>
+    </div>
+  `).join('');
+
+  acqPendingList.querySelectorAll('.acq-approve-btn').forEach(btn => {
+    btn.addEventListener('click', () => approveAcqItem(btn.dataset.id));
+  });
+  acqPendingList.querySelectorAll('.acq-reject-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const res = await fetch(`/api/acquisition/queue/${btn.dataset.id}/reject`, { method: 'PATCH' });
+      if (res.ok) { await loadAcquisitionQueue(); }
+      else showErrorBar('Failed to reject item.');
+    });
+  });
+}
+
+function renderAcqActive() {
+  // Show in_progress + complete + failed items not yet in the live cards map.
+  const active = acqQueue.filter(i =>
+    ['approved','in_progress','complete','failed'].includes(i.status)
+  );
+  if (active.length === 0 && acqActiveCards.size === 0) {
+    acqActiveList.innerHTML = '<p class="acq-empty-msg">No active jobs.</p>';
+    return;
+  }
+  // Render cards for historical items not already in the live map.
+  active.forEach(item => {
+    if (acqActiveCards.has(item.id)) return;
+    _addActiveCard(item.id, item.manufacturer, item.product_id, item.status,
+                   item.error || null);
+  });
+}
+
+function _addActiveCard(id, manufacturer, product_id, initialStatus, errorText) {
+  // Remove "no active jobs" placeholder.
+  const placeholder = acqActiveList.querySelector('.acq-empty-msg');
+  if (placeholder) placeholder.remove();
+
+  const card = document.createElement('div');
+  card.className = 'acq-card acq-active-card';
+  card.dataset.id = id;
+
+  const statusClass = { complete: 'success', failed: 'error', in_progress: 'running' }[initialStatus] || 'running';
+  const statusText  = { complete: '✓ Complete', failed: '✗ Failed', in_progress: '⟳ Running',
+                        approved: '⟳ Starting…' }[initialStatus] || initialStatus;
+
+  card.innerHTML = `
+    <div class="acq-card-head">
+      <span class="acq-card-pid">${_esc(manufacturer)} · ${_esc(product_id)}</span>
+      <span class="acq-status-badge ${statusClass}">${statusText}</span>
+    </div>
+    <div class="acq-card-files"></div>
+    ${errorText ? `<div class="acq-card-error">${_esc(errorText)}</div>` : ''}
+    ${initialStatus === 'failed'
+      ? `<button class="icon-btn acq-retry-btn" data-id="${_esc(id)}">↻ Retry</button>`
+      : ''}
+  `;
+
+  acqActiveList.insertBefore(card, acqActiveList.firstChild);
+
+  const filesEl  = card.querySelector('.acq-card-files');
+  const statusEl = card.querySelector('.acq-status-badge');
+  acqActiveCards.set(id, { card, filesEl, statusEl });
+
+  card.querySelectorAll('.acq-retry-btn').forEach(btn => {
+    btn.addEventListener('click', () => retryAcqItem(btn.dataset.id));
+  });
+}
+
+function _updateActiveCard(id, status, extra = {}) {
+  const entry = acqActiveCards.get(id);
+  if (!entry) return;
+  const { card, filesEl, statusEl } = entry;
+
+  if (status === 'running') {
+    statusEl.className = 'acq-status-badge running';
+    statusEl.textContent = extra.message ? `⟳ ${extra.message}` : '⟳ Running';
+  } else if (status === 'file') {
+    const li = document.createElement('div');
+    li.className = 'acq-file-item';
+    li.textContent = `↓ ${extra.filename || ''}`;
+    filesEl.appendChild(li);
+  } else if (status === 'file_error') {
+    const li = document.createElement('div');
+    li.className = 'acq-file-item error';
+    li.textContent = `✗ ${extra.filename || ''}: ${extra.error || ''}`;
+    filesEl.appendChild(li);
+  } else if (status === 'complete') {
+    statusEl.className = 'acq-status-badge success';
+    statusEl.textContent = `✓ Complete (${extra.files_added ?? 0} file${extra.files_added !== 1 ? 's' : ''})`;
+  } else if (status === 'error') {
+    statusEl.className = 'acq-status-badge error';
+    statusEl.textContent = '✗ Failed';
+    const errEl = document.createElement('div');
+    errEl.className = 'acq-card-error';
+    errEl.textContent = extra.error || 'Unknown error';
+    card.appendChild(errEl);
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'icon-btn acq-retry-btn';
+    retryBtn.textContent = '↻ Retry';
+    retryBtn.dataset.id = id;
+    retryBtn.addEventListener('click', () => retryAcqItem(id));
+    card.appendChild(retryBtn);
+  } else if (status === 'escalated') {
+    statusEl.className = 'acq-status-badge warning';
+    statusEl.textContent = extra.auto ? '☁ Escalated (auto)' : '☁ Escalated';
+    const msgEl = document.createElement('div');
+    msgEl.className = 'acq-card-error';
+    msgEl.textContent = extra.message || 'No docs found — queued for cloud escalation.';
+    card.appendChild(msgEl);
+    const escBtn = document.createElement('button');
+    escBtn.className = 'icon-btn';
+    escBtn.textContent = '→ View Escalation';
+    escBtn.addEventListener('click', () => {
+      document.querySelector('.lib-sub-btn[data-subtab="escalation"]')?.click();
+    });
+    card.appendChild(escBtn);
+  }
+}
+
+async function approveAcqItem(id) {
+  const res = await fetch(`/api/acquisition/queue/${id}/approve`, { method: 'PATCH' });
+  if (!res.ok) { showErrorBar('Failed to approve item.'); return; }
+  // Find the item in acqQueue for card creation.
+  const item = acqQueue.find(i => i.id === id);
+  if (item) _addActiveCard(id, item.manufacturer, item.product_id, 'approved', null);
+  await loadAcquisitionQueue();
+}
+
+async function retryAcqItem(id) {
+  const res = await fetch(`/api/acquisition/queue/${id}/retry`, { method: 'POST' });
+  if (!res.ok) { showErrorBar('Failed to retry item.'); return; }
+  const entry = acqActiveCards.get(id);
+  if (entry) {
+    entry.statusEl.className = 'acq-status-badge running';
+    entry.statusEl.textContent = '⟳ Starting…';
+    // Remove retry button if present.
+    entry.card.querySelectorAll('.acq-retry-btn').forEach(b => b.remove());
+    entry.card.querySelectorAll('.acq-card-error').forEach(b => b.remove());
+  }
+}
+
+// SSE connection management.
+function connectAcqSse() {
+  if (acqSse) return;  // already connected
+  acqSse = new EventSource('/api/acquisition/stream');
+  acqSseDot.classList.add('connected');
+  acqSseDot.title = 'SSE connected';
+
+  acqSse.onmessage = e => {
+    let event;
+    try { event = JSON.parse(e.data); } catch { return; }
+
+    const { type, id } = event;
+    if (type === 'start') {
+      if (!acqActiveCards.has(id)) {
+        _addActiveCard(id, event.manufacturer, event.product_id, 'approved', null);
+      }
+      loadAcquisitionQueue();
+    } else if (type === 'progress') {
+      _updateActiveCard(id, 'running', event);
+    } else if (type === 'file') {
+      _updateActiveCard(id, 'file', event);
+    } else if (type === 'file_error') {
+      _updateActiveCard(id, 'file_error', event);
+    } else if (type === 'complete') {
+      _updateActiveCard(id, 'complete', event);
+      loadAcquisitionQueue();
+      loadLibrary();  // refresh library items
+    } else if (type === 'error') {
+      _updateActiveCard(id, 'error', event);
+      loadAcquisitionQueue();
+    } else if (type === 'escalated') {
+      _updateActiveCard(id, 'escalated', event);
+      loadAcquisitionQueue();
+      setStatus(event.message || 'No docs found — escalated to cloud queue.', 'warning');
+    }
+  };
+
+  acqSse.onerror = () => {
+    acqSseDot.classList.remove('connected');
+    acqSseDot.title = 'SSE disconnected — reconnecting…';
+    acqSse.close();
+    acqSse = null;
+    // Reconnect after 5 s.
+    setTimeout(() => {
+      if (document.getElementById('lib-acquisition') &&
+          !document.getElementById('lib-acquisition').hidden) {
+        connectAcqSse();
+      }
+    }, 5000);
+  };
+}
+
+function disconnectAcqSse() {
+  if (!acqSse) return;
+  acqSse.close();
+  acqSse = null;
+  acqSseDot.classList.remove('connected');
+  acqSseDot.title = 'SSE disconnected';
+}
+
+// Hook into sub-tab switching to manage SSE connection.
+libSubBar.addEventListener('click', e => {
+  const btn = e.target.closest('.lib-sub-btn');
+  if (!btn) return;
+  const subtab = btn.dataset.subtab;
+  if (subtab === 'acquisition') {
+    loadAcquisitionQueue();
+    connectAcqSse();
+  } else {
+    disconnectAcqSse();
+  }
+}, true);  // capture so it runs before the existing handler
+
+// Request modal.
+function openAcqRequestModal() {
+  acqMfrInput.value      = '';
+  acqProductInput.value  = '';
+  acqUrlInput.value      = '';
+  acqReasonInput.value   = '';
+  acqDoctypeSelect.value = '';
+  acqRequestBackdrop.hidden = false;
+  acqRequestModal.hidden    = false;
+  acqMfrInput.focus();
+}
+function closeAcqRequestModal() {
+  acqRequestBackdrop.hidden = true;
+  acqRequestModal.hidden    = true;
+}
+
+acqAddBtn.addEventListener('click', openAcqRequestModal);
+acqRequestClose.addEventListener('click', closeAcqRequestModal);
+acqRequestCancel.addEventListener('click', closeAcqRequestModal);
+acqRequestBackdrop.addEventListener('click', closeAcqRequestModal);
+
+acqRequestSubmit.addEventListener('click', async () => {
+  const mfr = acqMfrInput.value.trim();
+  const pid = acqProductInput.value.trim();
+  if (!mfr) { acqMfrInput.focus(); return; }
+  if (!pid) { acqProductInput.focus(); return; }
+  const body = {
+    manufacturer: mfr,
+    product_id:   pid,
+    doc_type:     acqDoctypeSelect.value || null,
+    source_url:   acqUrlInput.value.trim() || null,
+    reason:       acqReasonInput.value.trim() || null,
+  };
+  const res = await fetch('/api/acquisition/queue', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  if (res.ok) {
+    closeAcqRequestModal();
+    await loadAcquisitionQueue();
+  } else {
+    const e = await res.json().catch(() => ({}));
+    showErrorBar(e.detail || 'Failed to add to queue.');
+  }
+});
+
+acqMfrInput.addEventListener('keydown',     e => { if (e.key === 'Enter') acqProductInput.focus(); });
+acqProductInput.addEventListener('keydown', e => { if (e.key === 'Enter') acqRequestSubmit.click(); });
+
+acqApproveAllBtn.addEventListener('click', async () => {
+  const pending = acqQueue.filter(i => i.status === 'pending_approval');
+  for (const item of pending) {
+    await approveAcqItem(item.id);
+  }
+});
+
+// ── Escalation ────────────────────────────────────────────────
+const escActiveList    = document.getElementById('esc-active-list');
+const escPendingList   = document.getElementById('esc-pending-list');
+const escSseDot        = document.getElementById('esc-sse-dot');
+const escApproveAllBtn = document.getElementById('esc-approve-all-btn');
+const escBadge         = document.getElementById('esc-badge');
+const escProviderLabel = document.getElementById('esc-provider-label');
+
+let escQueue = [];
+let escSse   = null;
+const escActiveCards = new Map();
+
+async function loadEscalationQueue() {
+  const r = await fetch('/api/escalation/queue').catch(() => null);
+  escQueue = r?.ok ? await r.json() : [];
+  renderEscPending();
+  renderEscActive();
+  _updateEscBadge();
+}
+
+function _updateEscBadge() {
+  const count = escQueue.filter(i => i.status === 'pending_approval').length;
+  if (count > 0) {
+    escBadge.textContent = count;
+    escBadge.hidden = false;
+  } else {
+    escBadge.hidden = true;
+  }
+}
+
+function _escTruncate(text, n = 120) {
+  return text.length > n ? text.slice(0, n) + '…' : text;
+}
+
+function renderEscPending() {
+  const pending = escQueue.filter(i => i.status === 'pending_approval');
+  if (pending.length === 0) {
+    escPendingList.innerHTML = '<p class="acq-empty-msg">No items waiting for approval.</p>';
+    escApproveAllBtn.disabled = true;
+    return;
+  }
+  const publicCount = pending.filter(i => !i.has_client_docs).length;
+  escApproveAllBtn.disabled = publicCount === 0;
+
+  escPendingList.innerHTML = pending.map(item => `
+    <div class="acq-card" data-id="${_esc(item.id)}">
+      <div class="acq-card-head">
+        <span class="acq-card-pid">${_esc(_escTruncate(item.query_text, 60))}</span>
+        ${item.has_client_docs
+          ? '<span class="esc-client-badge">client data</span>'
+          : '<span class="esc-public-badge">public</span>'}
+      </div>
+      <div class="acq-card-reason">${_esc(_escTruncate(item.query_text))}</div>
+      <div class="acq-card-actions">
+        <button class="wb-chat-btn esc-approve-btn" data-id="${_esc(item.id)}">Approve</button>
+        <button class="wb-del-btn esc-reject-btn"   data-id="${_esc(item.id)}">Reject</button>
+      </div>
+    </div>
+  `).join('');
+
+  escPendingList.querySelectorAll('.esc-approve-btn').forEach(btn => {
+    btn.addEventListener('click', () => approveEscItem(btn.dataset.id));
+  });
+  escPendingList.querySelectorAll('.esc-reject-btn').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const res = await fetch(`/api/escalation/queue/${btn.dataset.id}/reject`, { method: 'PATCH' });
+      if (res.ok) await loadEscalationQueue();
+      else showErrorBar('Failed to reject escalation.');
+    });
+  });
+}
+
+function renderEscActive() {
+  const active = escQueue.filter(i =>
+    ['approved','in_progress','complete','failed'].includes(i.status)
+  );
+  if (active.length === 0 && escActiveCards.size === 0) {
+    escActiveList.innerHTML = '<p class="acq-empty-msg">No escalations yet.</p>';
+    return;
+  }
+  active.forEach(item => {
+    if (escActiveCards.has(item.id)) return;
+    _addEscCard(item.id, item.query_text, item.status, item.response || null, item.error || null);
+  });
+}
+
+function _addEscCard(id, queryText, initialStatus, response, errorText) {
+  const placeholder = escActiveList.querySelector('.acq-empty-msg');
+  if (placeholder) placeholder.remove();
+
+  const card = document.createElement('div');
+  card.className = 'acq-card esc-card';
+  card.dataset.id = id;
+
+  const statusClass = { complete: 'success', failed: 'error', in_progress: 'running' }[initialStatus] || 'running';
+  const statusText  = { complete: '✓ Complete', failed: '✗ Failed', in_progress: '⟳ Running',
+                        approved: '⟳ Starting…' }[initialStatus] || initialStatus;
+
+  card.innerHTML = `
+    <div class="acq-card-head">
+      <span class="acq-card-pid">${_esc(_escTruncate(queryText, 70))}</span>
+      <span class="acq-status-badge ${statusClass}">${statusText}</span>
+    </div>
+    ${response ? `<div class="esc-response">${_esc(response)}</div>` : '<div class="esc-response-placeholder"></div>'}
+    ${errorText ? `<div class="acq-card-error">${_esc(errorText)}</div>` : ''}
+    ${initialStatus === 'failed'
+      ? `<button class="icon-btn acq-retry-btn" data-id="${_esc(id)}">↻ Retry</button>`
+      : ''}
+  `;
+
+  escActiveList.insertBefore(card, escActiveList.firstChild);
+  const statusEl     = card.querySelector('.acq-status-badge');
+  const responseEl   = card.querySelector('.esc-response, .esc-response-placeholder');
+  escActiveCards.set(id, { card, statusEl, responseEl });
+
+  card.querySelectorAll('.acq-retry-btn').forEach(btn => {
+    btn.addEventListener('click', () => retryEscItem(btn.dataset.id));
+  });
+}
+
+function _updateEscCard(id, status, extra = {}) {
+  const entry = escActiveCards.get(id);
+  if (!entry) return;
+  const { card, statusEl, responseEl } = entry;
+
+  if (status === 'thinking') {
+    statusEl.className = 'acq-status-badge running';
+    statusEl.textContent = `⟳ ${extra.message || 'Thinking…'}`;
+  } else if (status === 'complete') {
+    statusEl.className = 'acq-status-badge success';
+    statusEl.textContent = extra.cached ? '✓ Complete (cached)' : '✓ Complete';
+    if (responseEl) {
+      responseEl.className = 'esc-response';
+      responseEl.textContent = extra.response || '';
+    }
+  } else if (status === 'error') {
+    statusEl.className = 'acq-status-badge error';
+    statusEl.textContent = '✗ Failed';
+    const errEl = document.createElement('div');
+    errEl.className = 'acq-card-error';
+    errEl.textContent = extra.error || 'Unknown error';
+    card.appendChild(errEl);
+    const retryBtn = document.createElement('button');
+    retryBtn.className = 'icon-btn acq-retry-btn';
+    retryBtn.textContent = '↻ Retry';
+    retryBtn.dataset.id = id;
+    retryBtn.addEventListener('click', () => retryEscItem(id));
+    card.appendChild(retryBtn);
+  }
+}
+
+async function approveEscItem(id) {
+  const res = await fetch(`/api/escalation/queue/${id}/approve`, { method: 'PATCH' });
+  if (!res.ok) { showErrorBar('Failed to approve escalation.'); return; }
+  const item = escQueue.find(i => i.id === id);
+  if (item) _addEscCard(id, item.query_text, 'approved', null, null);
+  await loadEscalationQueue();
+}
+
+async function retryEscItem(id) {
+  const res = await fetch(`/api/escalation/queue/${id}/retry`, { method: 'POST' });
+  if (!res.ok) { showErrorBar('Failed to retry escalation.'); return; }
+  const entry = escActiveCards.get(id);
+  if (entry) {
+    entry.statusEl.className = 'acq-status-badge running';
+    entry.statusEl.textContent = '⟳ Starting…';
+    entry.card.querySelectorAll('.acq-retry-btn').forEach(b => b.remove());
+    entry.card.querySelectorAll('.acq-card-error').forEach(b => b.remove());
+  }
+}
+
+function connectEscSse() {
+  if (escSse) return;
+  escSse = new EventSource('/api/escalation/stream');
+  escSseDot.classList.add('connected');
+  escSseDot.title = 'SSE connected';
+
+  escSse.onmessage = e => {
+    let event;
+    try { event = JSON.parse(e.data); } catch { return; }
+    const { type, id } = event;
+    if (type === 'start') {
+      if (!escActiveCards.has(id)) _addEscCard(id, event.query_text, 'approved', null, null);
+      loadEscalationQueue();
+    } else if (type === 'thinking') {
+      _updateEscCard(id, 'thinking', event);
+    } else if (type === 'complete') {
+      _updateEscCard(id, 'complete', event);
+      loadEscalationQueue();
+    } else if (type === 'error') {
+      _updateEscCard(id, 'error', event);
+      loadEscalationQueue();
+    }
+  };
+
+  escSse.onerror = () => {
+    escSseDot.classList.remove('connected');
+    escSseDot.title = 'SSE disconnected — reconnecting…';
+    escSse.close();
+    escSse = null;
+    setTimeout(() => {
+      if (!document.getElementById('lib-escalation').hidden) connectEscSse();
+    }, 5000);
+  };
+}
+
+function disconnectEscSse() {
+  if (!escSse) return;
+  escSse.close();
+  escSse = null;
+  escSseDot.classList.remove('connected');
+  escSseDot.title = 'SSE disconnected';
+}
+
+// Hook into sub-tab switching.
+libSubBar.addEventListener('click', e => {
+  const btn = e.target.closest('.lib-sub-btn');
+  if (!btn) return;
+  const subtab = btn.dataset.subtab;
+  if (subtab === 'escalation') {
+    loadEscalationQueue();
+    connectEscSse();
+  } else {
+    disconnectEscSse();
+  }
+}, true);
+
+escApproveAllBtn.addEventListener('click', async () => {
+  const pending = escQueue.filter(i => i.status === 'pending_approval' && !i.has_client_docs);
+  for (const item of pending) await approveEscItem(item.id);
+});
+
+// Hook into sub-tab switching to load connections on first visit.
+libSubBar.addEventListener('click', e => {
+  const btn = e.target.closest('.lib-sub-btn');
+  if (!btn) return;
+  if (btn.dataset.subtab === 'connections') loadConnections();
+}, true);
+
+// Poll for pending escalation badge while library view is visible.
+setInterval(() => {
+  if (!document.getElementById('library-view').hidden) {
+    fetch('/api/escalation/queue?status=pending_approval')
+      .then(r => r.ok ? r.json() : [])
+      .then(items => {
+        const count = items.length;
+        if (count > 0) { escBadge.textContent = count; escBadge.hidden = false; }
+        else escBadge.hidden = true;
+      })
+      .catch(() => {});
+  }
+}, 10000);
+
+// ── Connections ───────────────────────────────────────────────
+const connList = document.getElementById('conn-list');
+
+// Mutable state: connection type → { config (with password masked), enabled }
+let _connections = [];
+
+async function loadConnections() {
+  const r = await fetch('/api/connections').catch(() => null);
+  _connections = r?.ok ? await r.json() : [];
+  renderConnections();
+}
+
+function renderConnections() {
+  if (_connections.length === 0) {
+    connList.innerHTML = '<p class="acq-empty-msg">No connections configured.</p>';
+    return;
+  }
+  connList.innerHTML = '';
+  for (const conn of _connections) {
+    connList.appendChild(_buildConnCard(conn));
+  }
+}
+
+function _buildConnCard(conn) {
+  const card = document.createElement('div');
+  card.className = 'conn-card';
+  card.dataset.type = conn.type;
+
+  const enabledClass = conn.enabled ? 'conn-status-on' : 'conn-status-off';
+  const enabledText  = conn.enabled ? 'Enabled' : 'Disabled';
+
+  // Build config fields HTML
+  const fieldsHtml = conn.fields.map(f => {
+    const val = conn.config[f.key] ?? '';
+    if (f.type === 'bool') {
+      return `<div class="conn-field-row">
+        <label>${_esc(f.label)}</label>
+        <input type="checkbox" class="conn-field" data-key="${_esc(f.key)}"
+          ${val ? 'checked' : ''} />
+      </div>`;
+    }
+    if (f.type === 'select' && f.options) {
+      const opts = f.options.map(o =>
+        `<option value="${_esc(o)}" ${o === val ? 'selected' : ''}>${_esc(o)}</option>`
+      ).join('');
+      return `<div class="conn-field-row">
+        <label>${_esc(f.label)}</label>
+        <select class="conn-field" data-key="${_esc(f.key)}">${opts}</select>
+      </div>`;
+    }
+    if (f.type === 'password') {
+      return `<div class="conn-field-row">
+        <label>${_esc(f.label)}</label>
+        <input type="password" class="conn-field" data-key="${_esc(f.key)}"
+          placeholder="Enter password…" autocomplete="new-password" />
+      </div>`;
+    }
+    return `<div class="conn-field-row">
+      <label>${_esc(f.label)}</label>
+      <input type="${_esc(f.type === 'number' ? 'number' : 'text')}"
+        class="conn-field" data-key="${_esc(f.key)}"
+        value="${_esc(String(val))}"
+        placeholder="${_esc(f.label)}" />
+    </div>`;
+  }).join('');
+
+  const indexBtnHtml = conn.type === 'mfiles'
+    ? `<button class="wb-chat-btn conn-index-btn" ${conn.enabled ? '' : 'disabled'} title="Download and index all documents from the M-Files vault">Index Vault</button>`
+    : '';
+
+  card.innerHTML = `
+    <div class="conn-card-head">
+      <div class="conn-card-title">
+        <span class="conn-label">${_esc(conn.label)}</span>
+        <span class="conn-status ${enabledClass}">${enabledText}</span>
+      </div>
+      <p class="conn-desc">${_esc(conn.description)}</p>
+    </div>
+    <div class="conn-fields">${fieldsHtml}</div>
+    <div class="conn-card-foot">
+      <button class="icon-btn conn-test-btn">Test</button>
+      <button class="icon-btn conn-save-btn">Save</button>
+      <button class="${conn.enabled ? 'wb-del-btn conn-disable-btn' : 'wb-chat-btn conn-enable-btn'}">
+        ${conn.enabled ? 'Disable' : 'Enable'}
+      </button>
+      ${indexBtnHtml}
+      <span class="conn-test-result"></span>
+    </div>
+  `;
+
+  // Try to pre-fill from env vars if config is empty.
+  if (!conn.config.host && !conn.config.vault) {
+    fetch(`/api/connections/${conn.type}/env-hint`)
+      .then(r => r.ok ? r.json() : null)
+      .then(hint => {
+        if (!hint?.has_env) return;
+        card.querySelectorAll('.conn-field').forEach(input => {
+          const key = input.dataset.key;
+          if (hint.config[key] && input.type !== 'password') {
+            input.value = hint.config[key];
+          }
+        });
+      })
+      .catch(() => {});
+  }
+
+  const testResult = card.querySelector('.conn-test-result');
+
+  card.querySelector('.conn-save-btn').addEventListener('click', async () => {
+    const config = _readConnFields(card, conn.fields);
+    const res = await fetch(`/api/connections/${conn.type}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ config }),
+    });
+    if (res.ok) {
+      testResult.className = 'conn-test-result ok';
+      testResult.textContent = 'Saved.';
+    } else {
+      testResult.className = 'conn-test-result fail';
+      testResult.textContent = 'Save failed.';
+    }
+  });
+
+  card.querySelector('.conn-test-btn').addEventListener('click', async () => {
+    testResult.className = 'conn-test-result';
+    testResult.textContent = 'Testing…';
+    const res = await fetch(`/api/connections/${conn.type}/test`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      testResult.className = 'conn-test-result ok';
+      const info = [data.vault_name, data.server_version].filter(Boolean).join(' · ');
+      testResult.textContent = `✓ Connected${info ? ' — ' + info : ''}`;
+    } else {
+      testResult.className = 'conn-test-result fail';
+      testResult.textContent = `✗ ${data.error || 'Connection failed'}`;
+    }
+  });
+
+  const enableBtn  = card.querySelector('.conn-enable-btn');
+  const disableBtn = card.querySelector('.conn-disable-btn');
+
+  if (enableBtn) {
+    enableBtn.addEventListener('click', async () => {
+      const res = await fetch(`/api/connections/${conn.type}/enable`, { method: 'PATCH' });
+      if (res.ok) await loadConnections();
+      else showErrorBar('Failed to enable connection.');
+    });
+  }
+  if (disableBtn) {
+    disableBtn.addEventListener('click', async () => {
+      const res = await fetch(`/api/connections/${conn.type}/disable`, { method: 'PATCH' });
+      if (res.ok) await loadConnections();
+      else showErrorBar('Failed to disable connection.');
+    });
+  }
+
+  const indexBtn = card.querySelector('.conn-index-btn');
+  if (indexBtn) {
+    indexBtn.addEventListener('click', async () => {
+      indexBtn.disabled = true;
+      indexBtn.textContent = 'Starting…';
+      testResult.className = 'conn-test-result';
+      testResult.textContent = '';
+
+      const startRes = await fetch('/api/connections/mfiles/index', { method: 'POST' });
+      if (!startRes.ok) {
+        const err = await startRes.json().catch(() => ({}));
+        testResult.className = 'conn-test-result fail';
+        testResult.textContent = err.detail || 'Failed to start indexer.';
+        indexBtn.disabled = false;
+        indexBtn.textContent = 'Index Vault';
+        return;
+      }
+
+      setStatus('M-Files vault index started…', 'busy');
+      let indexed = 0;
+
+      const es = new EventSource('/api/connections/mfiles/index/stream');
+      es.onmessage = evt => {
+        const data = JSON.parse(evt.data);
+        if (data.type === 'file') {
+          indexed++;
+          testResult.textContent = `Indexed ${indexed} file${indexed !== 1 ? 's' : ''}…`;
+          setStatus(`M-Files: indexed ${indexed} file${indexed !== 1 ? 's' : ''}…`, 'busy');
+        } else if (data.type === 'complete') {
+          es.close();
+          indexBtn.disabled = false;
+          indexBtn.textContent = 'Index Vault';
+          testResult.className = 'conn-test-result ok';
+          testResult.textContent = `✓ Done — ${data.indexed} indexed, ${data.skipped} skipped${data.errors ? ', ' + data.errors + ' errors' : ''}`;
+          setStatus(`M-Files vault index complete — ${data.indexed} files indexed.`, 'info');
+        } else if (data.type === 'error') {
+          es.close();
+          indexBtn.disabled = false;
+          indexBtn.textContent = 'Index Vault';
+          testResult.className = 'conn-test-result fail';
+          testResult.textContent = `✗ ${data.error}`;
+          setStatus(data.error, 'error');
+        }
+      };
+      es.onerror = () => {
+        es.close();
+        indexBtn.disabled = false;
+        indexBtn.textContent = 'Index Vault';
+        if (!testResult.textContent.startsWith('✓')) {
+          testResult.className = 'conn-test-result fail';
+          testResult.textContent = 'Stream disconnected.';
+        }
+      };
+    });
+  }
+
+  return card;
+}
+
+function _readConnFields(card, fields) {
+  const config = {};
+  card.querySelectorAll('.conn-field').forEach(input => {
+    const key = input.dataset.key;
+    const field = fields.find(f => f.key === key);
+    if (!field) return;
+    if (field.type === 'bool') {
+      config[key] = input.checked;
+    } else if (field.type === 'number') {
+      config[key] = input.value ? parseInt(input.value, 10) : null;
+    } else {
+      config[key] = input.value.trim();
+    }
+  });
+  return config;
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────
+
+/**
+ * Fetch runtime site config and apply public library mode if active.
+ * In library mode:
+ *   - Only the Library tab is visible (Chat + Workbench tabs are hidden)
+ *   - Within Library, only the Browse sub-tab is shown
+ *   - The sidebar (document uploads, conversations) is hidden
+ *   - A read-only notice is shown in the header branding area
+ */
+async function applySiteConfig() {
+  try {
+    const res = await fetch('/api/site-config');
+    if (!res.ok) return;
+    const cfg = await res.json();
+    if (!cfg.public_library_mode) return;
+
+    // Hide Chat and Workbench tabs; activate Library tab
+    document.querySelectorAll('.tab-btn[data-tab="chat"], .tab-btn[data-tab="workbench"]')
+      .forEach(b => b.hidden = true);
+    const libTabBtn = document.querySelector('.tab-btn[data-tab="library"]');
+    if (libTabBtn) libTabBtn.click();
+
+    // Hide Acquisition, Escalation, Connections sub-tabs
+    ['acquisition', 'escalation', 'connections'].forEach(st => {
+      const btn = document.querySelector(`.lib-sub-btn[data-subtab="${st}"]`);
+      if (btn) btn.hidden = true;
+    });
+
+    // Hide sidebar and sidebar toggle
+    sidebar.classList.add('collapsed');
+    sidebarToggle.hidden = true;
+
+    // Add a read-only badge next to the brand title
+    const brand = document.querySelector('.brand');
+    if (brand) {
+      const badge = document.createElement('span');
+      badge.className = 'lib-readonly-badge';
+      badge.textContent = 'Public Library';
+      brand.appendChild(badge);
+    }
+  } catch { /* non-critical */ }
+}
+
+applySiteConfig();
 fetchModels().then(pollModelStatus);
 fetchConversations();
 fetchDocuments();

@@ -8,6 +8,7 @@ from typing import Optional
 
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
+from pydantic import BaseModel
 
 import config
 import copyright_extract
@@ -71,7 +72,7 @@ async def list_documents(
          "size_bytes": d.get("size_bytes",0), "chunk_count": d.get("chunk_count",0),
          "created_at": d.get("created_at"), "scope_type": d.get("scope_type","global"),
          "scope_id": d.get("scope_id"), "doc_type": d.get("doc_type","misc"),
-         "summary": d.get("summary","")}
+         "summary": d.get("summary",""), "classification": d.get("classification","client")}
         for d in docs
     ]
 
@@ -84,6 +85,7 @@ async def upload_document(
     project_id:      Optional[str] = None,
     client_id:       Optional[str] = None,
     doc_type:        str = "misc",
+    classification:  Optional[str] = None,
 ):
     user_email = _user(request)
     data       = await file.read()
@@ -100,6 +102,14 @@ async def upload_document(
         doc_type = "misc"
 
     scope_type, scope_id = _resolve_scope(conversation_id, project_id, client_id)
+
+    # Auto-classify: client/project-scoped documents are always client-confidential.
+    # Global standards are public; manual uploads default to client unless overridden.
+    if scope_type in ("client", "project"):
+        classification = "client"
+    elif classification not in ("public", "client"):
+        classification = "public" if scope_type == "global" and doc_type == "standard" else "client"
+
     doc_id = str(uuid.uuid4())
     ts     = _now_iso()
 
@@ -117,11 +127,85 @@ async def upload_document(
         "id": doc_id, "user_email": user_email, "filename": filename,
         "size_bytes": len(data), "chunk_count": chunk_count, "created_at": ts,
         "scope_type": scope_type, "scope_id": scope_id, "doc_type": doc_type,
-        "summary": summary, "copyright_notices": notices,
+        "summary": summary, "copyright_notices": notices, "classification": classification,
     }
     with db.lock:
         db.insert_document(meta)
     return meta
+
+
+_VALID_SCOPES = ("global", "client", "project", "session")
+
+
+class DocumentPatch(BaseModel):
+    doc_type:       Optional[str] = None
+    classification: Optional[str] = None
+    filename:       Optional[str] = None
+    scope_type:     Optional[str] = None
+    scope_id:       Optional[str] = None
+
+
+@router.patch("/documents/{doc_id}")
+async def patch_document(doc_id: str, body: DocumentPatch, request: Request):
+    """Update mutable document attributes (doc_type, classification, filename, scope)."""
+    user_email = _user(request)
+    with db.lock:
+        doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if doc["user_email"] != user_email:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    fields: dict = {}
+
+    # Determine the effective scope after this patch (for classification validation).
+    effective_scope = body.scope_type if body.scope_type is not None else doc.get("scope_type", "global")
+
+    if body.scope_type is not None:
+        if body.scope_type not in _VALID_SCOPES:
+            raise HTTPException(status_code=422, detail=f"Invalid scope_type '{body.scope_type}'.")
+        fields["scope_type"] = body.scope_type
+        fields["scope_id"]   = body.scope_id  # may be None → NULL
+
+    if body.doc_type is not None:
+        if body.doc_type not in DOC_TYPES:
+            raise HTTPException(status_code=422, detail=f"Invalid doc_type '{body.doc_type}'.")
+        fields["doc_type"] = body.doc_type
+
+    if body.classification is not None:
+        if body.classification not in ("public", "client"):
+            raise HTTPException(status_code=422, detail="classification must be 'public' or 'client'.")
+        if effective_scope in ("client", "project") and body.classification == "public":
+            raise HTTPException(
+                status_code=422,
+                detail="Client and project documents cannot be reclassified as public.",
+            )
+        fields["classification"] = body.classification
+    elif effective_scope in ("client", "project"):
+        # If scope is being moved to client/project, enforce classification.
+        fields["classification"] = "client"
+
+    if body.filename is not None:
+        fname = body.filename.strip()
+        if fname:
+            fields["filename"] = fname
+
+    if fields:
+        with db.lock:
+            db.update_document(doc_id, fields)
+        # Propagate scope change to ChromaDB chunk metadata.
+        if "scope_type" in fields:
+            rag.update_chunk_scope(doc_id, fields["scope_type"], fields.get("scope_id"))
+
+    with db.lock:
+        doc = db.get_document(doc_id)
+    return {
+        "id": doc["id"], "filename": doc.get("filename", ""),
+        "doc_type": doc.get("doc_type", "misc"),
+        "classification": doc.get("classification", "client"),
+        "scope_type": doc.get("scope_type", "global"),
+        "scope_id": doc.get("scope_id"),
+    }
 
 
 @router.delete("/documents/{doc_id}")
