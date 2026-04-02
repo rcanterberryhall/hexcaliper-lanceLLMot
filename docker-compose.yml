@@ -1,5 +1,5 @@
 services:
-  nginx:
+  lancellmot-nginx:
     image: nginx:1.27-alpine
     ports:
       - "8080:8080"   # expose only this port to the host
@@ -7,12 +7,12 @@ services:
       - ./nginx/default.conf:/etc/nginx/conf.d/default.conf:ro
       - ./web:/usr/share/nginx/html:ro
     depends_on:
-      - api
+      - lancellmot-api
     restart: unless-stopped
     networks:
       - app
 
-  api:
+  lancellmot-api:
     build: ./api
     # host.docker.internal resolves to the host gateway so the api container
     # can reach merLLM (and through it, Ollama) running on the host.
@@ -25,6 +25,9 @@ services:
       DEFAULT_MODEL: "qwen3:32b"
       MAX_INPUT_CHARS: "20000"
       REQUEST_TIMEOUT_SECONDS: "120"
+      # If migrating from a prior install, rename data/hexcaliper.db to data/lancellmot.db
+      # or set DB_PATH explicitly: DB_PATH: "/app/data/hexcaliper.db"
+      DB_PATH: "/app/data/lancellmot.db"
     volumes:
       - ./data:/app/data
     devices:
@@ -43,7 +46,7 @@ services:
   # To enable: uncomment this block and expose port 8081 on your reverse proxy,
   # pointing library.hexcaliper.com at this container.
   #
-  # nginx-library:
+  # lancellmot-nginx-library:
   #   image: nginx:1.27-alpine
   #   ports:
   #     - "8081:8081"
@@ -51,7 +54,7 @@ services:
   #     - ./nginx/library.conf:/etc/nginx/conf.d/default.conf:ro
   #     - ./web:/usr/share/nginx/html:ro
   #   depends_on:
-  #     - api
+  #     - lancellmot-api
   #   restart: unless-stopped
   #   networks:
   #     - app

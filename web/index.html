@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  index.html — Hexcaliper AI Chat
+  index.html — LanceLLMot AI Chat
 
   Top-level structure:
     #app (flex row)
@@ -22,7 +22,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Hexcaliper — AI Chat</title>
+  <title>LanceLLMot — AI Chat</title>
   <link rel="icon" type="image/svg+xml" href="/assets/hexcaliper-crest.svg" />
   <link rel="stylesheet" href="/styles.css" />
   <!-- highlight.js theme — atom-one-dark fits the navy/purple palette -->
@@ -96,9 +96,9 @@
       <!-- Header: branding, GPU stats, model controls -->
       <header>
         <button id="sidebar-toggle" aria-label="Toggle sidebar">&#9776;</button>
-        <img src="/assets/hexcaliper-crest.svg" alt="Hexcaliper crest" />
+        <img src="/assets/hexcaliper-crest.svg" alt="LanceLLMot crest" />
         <div class="brand">
-          <h1>Hexcaliper</h1>
+          <h1>LanceLLMot</h1>
           <p>AI Workbench</p>
         </div>
 
@@ -500,7 +500,7 @@
 
           <div class="help-section">
             <h3>Overview</h3>
-            <p>Hexcaliper is a self-hosted AI workbench for safety engineering document analysis. It runs entirely on your local infrastructure via Ollama — no data leaves your network unless you explicitly approve it.</p>
+            <p>LanceLLMot is a self-hosted AI workbench for safety engineering document analysis. It runs entirely on your local infrastructure via Ollama — no data leaves your network unless you explicitly approve it.</p>
             <p>Upload ISO/IEC standards, contracts, THEOPs, FMEAs, hazard analyses, FAT/SAT test records, PLC code, and correspondence. The AI connects documents by shared safety concepts (diagnostic coverage, SIL, safe state, etc.) so you can ask cross-document questions like <em>"Does this THEOP clause comply with IEC 61508 SIL 2?"</em></p>
             <div class="help-tip">All analysis runs locally. Documents and conversations never leave your server unless you use the Cloud Escalation feature.</div>
           </div>
@@ -597,7 +597,7 @@
 
           <div class="help-section">
             <h3>Knowledge graph &amp; concept linking</h3>
-            <p>When a document is uploaded, Hexcaliper does two things beyond basic vector search:</p>
+            <p>When a document is uploaded, LanceLLMot does two things beyond basic vector search:</p>
             <dl class="help-kv">
               <dt>Citation links</dt><dd>Standard identifiers (IEC 61508-1, ISO 13849, etc.) are extracted by regex and linked as hub nodes. Documents referencing the same standard are connected.</dd>
               <dt>Concept links</dt><dd>The AI extracts abstract safety concepts from each chunk — "diagnostic coverage", "safe state", "proof test interval", etc. Chunks addressing the same concept across different documents are linked regardless of explicit citation numbers.</dd>

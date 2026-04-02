@@ -19,7 +19,7 @@ MAX_INPUT_CHARS = int(_get("MAX_INPUT_CHARS", "20000"))
 REQUEST_TIMEOUT = float(_get("REQUEST_TIMEOUT_SECONDS", "120"))
 MAX_DOC_BYTES   = 20 * 1024 * 1024
 
-DB_PATH         = _get("DB_PATH", "/app/data/hexcaliper.db")
+DB_PATH         = _get("DB_PATH", "/app/data/lancellmot.db")
 CHROMA_PATH     = _get("CHROMA_PATH", "/app/data/chroma")
 TINYDB_LEGACY   = _get("TINYDB_LEGACY_PATH", "/app/data/db.json")
 LIBRARY_PATH    = _get("LIBRARY_PATH", "/app/data/library")

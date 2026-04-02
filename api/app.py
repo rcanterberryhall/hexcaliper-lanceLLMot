@@ -10,7 +10,7 @@ import db
 import rag
 from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections, system_prompts
 
-app = FastAPI(title="Hexcaliper API", version="4.0.0")
+app = FastAPI(title="LanceLLMot API", version="4.0.0")
 
 app.add_middleware(
     CORSMiddleware,
