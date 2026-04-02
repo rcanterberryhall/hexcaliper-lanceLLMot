@@ -519,6 +519,15 @@ function renderConvList(convs) {
       startRenameConv(title, conv.id);
     });
 
+    const exportBtn = document.createElement('button');
+    exportBtn.className = 'conv-item-export';
+    exportBtn.textContent = '⬇';
+    exportBtn.title = 'Export conversation';
+    exportBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openExportMenu(conv.id, exportBtn);
+    });
+
     const del = document.createElement('button');
     del.className = 'conv-item-delete';
     del.textContent = '✕';
@@ -529,6 +538,14 @@ function renderConvList(convs) {
     });
 
     item.appendChild(title);
+    if (conv.system_prompt_id) {
+      const badge = document.createElement('span');
+      badge.className = 'conv-sp-badge';
+      badge.textContent = 'SP';
+      badge.title = 'System prompt assigned';
+      item.appendChild(badge);
+    }
+    item.appendChild(exportBtn);
     item.appendChild(del);
     item.addEventListener('click', () => loadConversation(conv.id));
     convList.appendChild(item);
@@ -558,6 +575,7 @@ async function loadConversation(id) {
     setActiveConvItem(id);
     setChatDocsVisible(true);
     await fetchChatDocuments();
+    syncSpForConversation(conv);
     input.focus();
   } catch (_) {}
 }
@@ -595,6 +613,7 @@ function newChat() {
   chatDocList.innerHTML = '';
   setActiveConvItem(null);
   setChatDocsVisible(false);
+  syncSpForConversation(null);
   input.focus();
 }
 
@@ -2819,6 +2838,217 @@ function _readConnFields(card, fields) {
   return config;
 }
 
+// ── System Prompts ────────────────────────────────────────────
+const spSelect      = document.getElementById('sp-select');
+const spEditBtn     = document.getElementById('sp-edit-btn');
+const spNewBtn      = document.getElementById('sp-new-btn');
+const spEditor      = document.getElementById('sp-editor');
+const spNameInput   = document.getElementById('sp-name-input');
+const spContentInput = document.getElementById('sp-content-input');
+const spSaveBtn     = document.getElementById('sp-save-btn');
+const spCancelBtn   = document.getElementById('sp-cancel-btn');
+const spDeleteBtn   = document.getElementById('sp-delete-btn');
+
+let _systemPrompts  = [];  // cached list from API
+let _editingSpId    = null; // null = creating new, number = editing existing
+
+async function fetchSystemPrompts() {
+  try {
+    const res = await fetch('/api/system-prompts');
+    if (!res.ok) return;
+    _systemPrompts = await res.json();
+    renderSpSelect();
+  } catch (_) {}
+}
+
+function renderSpSelect() {
+  const prev = spSelect.value;
+  spSelect.innerHTML = '<option value="">(none)</option>';
+  for (const sp of _systemPrompts) {
+    const opt = document.createElement('option');
+    opt.value = sp.id;
+    opt.textContent = sp.name;
+    spSelect.appendChild(opt);
+  }
+  // Restore selection if it still exists
+  if (prev && _systemPrompts.some(s => String(s.id) === prev)) {
+    spSelect.value = prev;
+  }
+  spEditBtn.disabled = !spSelect.value;
+}
+
+async function applySpToConversation(spId) {
+  if (!currentConvId) return;
+  try {
+    await fetch(`/api/conversations/${currentConvId}/system-prompt`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ system_prompt_id: spId || null }),
+    });
+    await fetchConversations();
+  } catch (_) {}
+}
+
+spSelect.addEventListener('change', async () => {
+  spEditBtn.disabled = !spSelect.value;
+  const spId = spSelect.value ? parseInt(spSelect.value, 10) : null;
+  await applySpToConversation(spId);
+});
+
+spEditBtn.addEventListener('click', () => {
+  const sp = _systemPrompts.find(s => String(s.id) === spSelect.value);
+  if (!sp) return;
+  _editingSpId = sp.id;
+  spNameInput.value    = sp.name;
+  spContentInput.value = sp.content;
+  spDeleteBtn.hidden   = false;
+  spEditor.hidden      = false;
+  spNameInput.focus();
+});
+
+spNewBtn.addEventListener('click', () => {
+  _editingSpId = null;
+  spNameInput.value    = '';
+  spContentInput.value = '';
+  spDeleteBtn.hidden   = true;
+  spEditor.hidden      = false;
+  spNameInput.focus();
+});
+
+spCancelBtn.addEventListener('click', () => {
+  spEditor.hidden = true;
+});
+
+spSaveBtn.addEventListener('click', async () => {
+  const name    = spNameInput.value.trim();
+  const content = spContentInput.value.trim();
+  if (!name)    { spNameInput.focus();    return; }
+  if (!content) { spContentInput.focus(); return; }
+
+  spSaveBtn.disabled    = true;
+  spSaveBtn.textContent = 'Saving…';
+  try {
+    let res;
+    if (_editingSpId) {
+      res = await fetch(`/api/system-prompts/${_editingSpId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content }),
+      });
+    } else {
+      res = await fetch('/api/system-prompts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, content }),
+      });
+    }
+    if (res.ok) {
+      const saved = await res.json();
+      spEditor.hidden = true;
+      await fetchSystemPrompts();
+      spSelect.value = saved.id || _editingSpId;
+      spEditBtn.disabled = !spSelect.value;
+      setStatus(`System prompt "${name}" saved.`, 'info');
+      if (!_editingSpId) {
+        await applySpToConversation(saved.id);
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      setStatus(err.detail || 'Failed to save system prompt.', 'error');
+    }
+  } catch {
+    setStatus('Failed to save system prompt — network error.', 'error');
+  } finally {
+    spSaveBtn.disabled    = false;
+    spSaveBtn.textContent = 'Save';
+  }
+});
+
+spDeleteBtn.addEventListener('click', async () => {
+  if (!_editingSpId) return;
+  const sp = _systemPrompts.find(s => s.id === _editingSpId);
+  if (!confirm(`Delete system prompt "${sp?.name}"?`)) return;
+  try {
+    const res = await fetch(`/api/system-prompts/${_editingSpId}`, { method: 'DELETE' });
+    if (res.ok || res.status === 204) {
+      spEditor.hidden = true;
+      await fetchSystemPrompts();
+      spSelect.value = '';
+      spEditBtn.disabled = true;
+      setStatus('System prompt deleted.', 'info');
+    } else {
+      setStatus('Failed to delete system prompt.', 'error');
+    }
+  } catch {
+    setStatus('Failed to delete system prompt — network error.', 'error');
+  }
+});
+
+function syncSpForConversation(conv) {
+  if (!conv) {
+    spSelect.value = '';
+    spEditBtn.disabled = true;
+    return;
+  }
+  const spId = conv.system_prompt_id;
+  spSelect.value = spId ? String(spId) : '';
+  spEditBtn.disabled = !spSelect.value;
+}
+
+// ── Conversation export ────────────────────────────────────────
+const exportMenu    = document.getElementById('export-menu');
+const exportMdBtn   = document.getElementById('export-md-btn');
+const exportJsonBtn = document.getElementById('export-json-btn');
+
+let _exportConvId  = null;
+let _exportAnchor  = null;
+
+function openExportMenu(convId, anchorEl) {
+  _exportConvId = convId;
+  _exportAnchor = anchorEl;
+  const rect = anchorEl.getBoundingClientRect();
+  exportMenu.style.top  = (rect.bottom + window.scrollY + 4) + 'px';
+  exportMenu.style.left = (rect.left  + window.scrollX)     + 'px';
+  exportMenu.hidden = false;
+}
+
+function closeExportMenu() {
+  exportMenu.hidden = true;
+  _exportConvId = null;
+}
+
+document.addEventListener('click', e => {
+  if (!exportMenu.hidden && !exportMenu.contains(e.target)) {
+    closeExportMenu();
+  }
+});
+
+async function triggerExport(fmt) {
+  if (!_exportConvId) return;
+  closeExportMenu();
+  try {
+    const res = await fetch(`/api/conversations/${_exportConvId}/export?format=${fmt}`);
+    if (!res.ok) { setStatus('Export failed.', 'error'); return; }
+    const blob = await res.blob();
+    const cd   = res.headers.get('Content-Disposition') || '';
+    const fnMatch = cd.match(/filename="([^"]+)"/);
+    const filename = fnMatch ? fnMatch[1] : `conversation.${fmt}`;
+    const url = URL.createObjectURL(blob);
+    const a   = document.createElement('a');
+    a.href     = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  } catch {
+    setStatus('Export failed — network error.', 'error');
+  }
+}
+
+exportMdBtn.addEventListener('click',   () => triggerExport('md'));
+exportJsonBtn.addEventListener('click', () => triggerExport('json'));
+
 // ── Bootstrap ─────────────────────────────────────────────────
 
 /**
@@ -2867,6 +3097,7 @@ applySiteConfig();
 fetchModels().then(() => Promise.all([pollModelStatus(), pollAnalysisModelStatus()]));
 fetchConversations();
 fetchDocuments();
+fetchSystemPrompts();
 pollGpu();
 setInterval(pollGpu, 3000);
 pollSystem();

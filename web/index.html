@@ -55,6 +55,29 @@
       <div id="doc-list" role="list"></div>
       <p class="copyright-notice">Documents may contain copyrighted material. You are responsible for ensuring your use complies with applicable licenses.</p>
 
+      <!-- System Prompts section -->
+      <div class="sidebar-divider"></div>
+      <div class="sidebar-section-header">
+        <span>System Prompt</span>
+        <button id="sp-new-btn" class="icon-btn" title="Create new system prompt">+</button>
+      </div>
+      <div id="sp-selector-wrap">
+        <select id="sp-select">
+          <option value="">(none)</option>
+        </select>
+        <button id="sp-edit-btn" class="icon-btn" title="Edit selected prompt" disabled>✎</button>
+      </div>
+      <!-- Inline editor for create/edit — hidden by default -->
+      <div id="sp-editor" hidden>
+        <input type="text" id="sp-name-input" placeholder="Prompt name…" />
+        <textarea id="sp-content-input" rows="4" placeholder="System prompt content…"></textarea>
+        <div class="sp-editor-actions">
+          <button id="sp-save-btn" class="wb-chat-btn">Save</button>
+          <button id="sp-cancel-btn" class="icon-btn">Cancel</button>
+          <button id="sp-delete-btn" class="wb-del-btn" hidden>Delete</button>
+        </div>
+      </div>
+
       <!-- Chat-scoped documents — hidden until a conversation is active -->
       <div class="sidebar-divider" id="chat-docs-divider" hidden></div>
       <div class="sidebar-section-header" id="chat-docs-header" hidden>
@@ -493,6 +516,8 @@
               <tr><td>Escalate →</td><td>Appears below each assistant response. Sends the query to a cloud model (Anthropic/OpenAI) for a second opinion. Always requires manual approval if client documents were in context.</td></tr>
               <tr><td>Global Documents +</td><td>Upload a document visible across all conversations (global scope). Good for standards and reference material.</td></tr>
               <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started.</td></tr>
+              <tr><td>System Prompt (sidebar)</td><td>Select a saved system prompt to assign it to the active conversation. Use + to create a new prompt, ✎ to edit the selected one. A "SP" badge appears on conversations that have a prompt assigned.</td></tr>
+              <tr><td>⬇ Export (conv menu)</td><td>Export the active conversation as Markdown or JSON. Markdown includes the title, system prompt, model, and all messages. JSON includes the full conversation structure.</td></tr>
             </table>
             <div class="help-tip">If a project is active (set via Workbench → Open in Chat), the project's documents are automatically included as context. The input placeholder will show the active project name.</div>
           </div>
@@ -602,6 +627,12 @@
         <div class="modal-foot" style="justify-content:flex-end">
           <button class="wb-chat-btn" id="help-close-btn">Close</button>
         </div>
+      </div>
+
+      <!-- ── Export dropdown (attached to conv action bar) ── -->
+      <div id="export-menu" class="export-menu" hidden>
+        <button id="export-md-btn">Markdown (.md)</button>
+        <button id="export-json-btn">JSON (.json)</button>
       </div>
 
       <!-- ── Status bar ── -->
