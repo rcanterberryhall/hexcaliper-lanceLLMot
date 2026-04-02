@@ -53,7 +53,7 @@ async def warm_model(model: str) -> None:
 async def summarize_document(text: str, model: str = "") -> str:
     """Return a 2-3 sentence summary of the document's first 6000 chars."""
     sample = text[:6000]
-    m = model or config.DEFAULT_MODEL
+    m = model or config.ANALYSIS_MODEL
     try:
         async with httpx.AsyncClient(timeout=120.0) as client:
             resp = await client.post(

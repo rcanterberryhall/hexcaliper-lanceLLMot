@@ -40,10 +40,13 @@ logger = logging.getLogger(__name__)
 
 # ── Model config ──────────────────────────────────────────────────────────────
 
-# Override via EXTRACT_MODEL env var; falls back to DEFAULT_MODEL.
 # Extraction quality scales strongly with model size — 30B+ recommended.
-EXTRACT_MODEL   = config._get("EXTRACT_MODEL", "") or config.DEFAULT_MODEL
+# EXTRACT_MODEL env var takes priority; otherwise uses ANALYSIS_MODEL (settable at runtime).
 EXTRACT_TIMEOUT = float(config._get("EXTRACT_TIMEOUT_SECONDS", "120"))
+
+
+def _extract_model() -> str:
+    return config._get("EXTRACT_MODEL", "") or config.ANALYSIS_MODEL
 
 
 # ── Seeded concept vocabulary ─────────────────────────────────────────────────
@@ -274,7 +277,7 @@ async def extract_chunk(
     :return:         Structured extraction result.
     :rtype:          ExtractionResult
     """
-    m = model or EXTRACT_MODEL
+    m = model or _extract_model()
     messages = [
         {"role": "system", "content": _build_system_prompt(learned_vocab)},
         {"role": "user",   "content": _build_user_prompt(text, doc_type)},

@@ -18,6 +18,7 @@ async def health():
         "ok":                      True,
         "ollama_base_url":         config.OLLAMA_BASE_URL,
         "default_model":           config.DEFAULT_MODEL,
+        "analysis_model":          config.ANALYSIS_MODEL,
         "max_input_chars":         config.MAX_INPUT_CHARS,
         "request_timeout_seconds": config.REQUEST_TIMEOUT,
     }
@@ -45,6 +46,16 @@ async def system():
         "mem_used": mem.used,
         "mem_total": mem.total,
     }
+
+
+@router.post("/set-analysis-model")
+async def set_analysis_model(request: Request):
+    body  = await request.json()
+    model = (body.get("model") or "").strip()
+    if not model:
+        raise HTTPException(status_code=400, detail="model is required")
+    config.ANALYSIS_MODEL = model
+    return {"ok": True, "model": model}
 
 
 @router.get("/model-status")

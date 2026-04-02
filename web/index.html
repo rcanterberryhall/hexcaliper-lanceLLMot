@@ -86,16 +86,27 @@
         <!-- Help button -->
         <button id="help-btn" class="icon-btn" title="Help">?</button>
 
-        <!-- Model selector with load-status dot and action buttons -->
-        <div class="model-wrap">
-          <label for="model-select">Model</label>
-          <span id="model-dot" class="model-dot"></span>
-          <span id="model-dot-label" class="model-dot-label">Checking…</span>
-          <select id="model-select">
-            <option value="">Loading…</option>
-          </select>
-          <button id="load-model-btn" class="icon-btn" title="Load model into VRAM">Load</button>
-          <button id="refresh-models-btn" class="icon-btn" title="Refresh model list / restart Ollama">↻</button>
+        <!-- Model selectors: Chat and Analysis -->
+        <div class="model-controls">
+          <div class="model-wrap">
+            <label for="model-select">Chat</label>
+            <span id="model-dot" class="model-dot"></span>
+            <span id="model-dot-label" class="model-dot-label">Checking…</span>
+            <select id="model-select">
+              <option value="">Loading…</option>
+            </select>
+            <button id="load-model-btn" class="icon-btn" title="Load chat model into VRAM">Load</button>
+          </div>
+          <div class="model-wrap">
+            <label for="analysis-select">Analysis</label>
+            <span id="analysis-dot" class="model-dot"></span>
+            <span id="analysis-dot-label" class="model-dot-label">Checking…</span>
+            <select id="analysis-select">
+              <option value="">Loading…</option>
+            </select>
+            <button id="load-analysis-btn" class="icon-btn" title="Load analysis model into VRAM">Load</button>
+          </div>
+          <button id="refresh-models-btn" class="icon-btn" title="Refresh model list from Ollama">↻</button>
         </div>
       </header>
 
@@ -561,18 +572,19 @@
               <dt>Concept links</dt><dd>The AI extracts abstract safety concepts from each chunk — "diagnostic coverage", "safe state", "proof test interval", etc. Chunks addressing the same concept across different documents are linked regardless of explicit citation numbers.</dd>
             </dl>
             <p>This means asking <em>"Does this THEOP satisfy IEC 61508 SIL 2 requirements for diagnostic coverage?"</em> can traverse from your THEOP chunks to IEC 61508 chunks that address the same concept, even if the THEOP never cites the standard by number.</p>
-            <div class="help-tip">Concept extraction runs in the background after upload. A 30B+ model gives the best extraction quality (set <code>EXTRACT_MODEL</code> env var).</div>
+            <div class="help-tip">Concept extraction runs in the background after upload. A 30B+ model gives the best extraction quality — use the Analysis model selector in the header.</div>
           </div>
 
           <div class="help-section">
             <h3>Models</h3>
             <table class="help-table">
               <tr><th>Control</th><th>What it does</th></tr>
-              <tr><td>Model selector</td><td>Choose which Ollama model to use for chat. The dot shows load status: green = loaded, amber = loading.</td></tr>
-              <tr><td>Load</td><td>Pre-load the selected model into VRAM. Eliminates the cold-start delay on the first message.</td></tr>
+              <tr><td>Chat selector</td><td>Model used for all chat responses. The dot shows whether it is resident in VRAM.</td></tr>
+              <tr><td>Analysis selector</td><td>Model used for document summarisation and concept extraction on upload. Changes take effect immediately without restart.</td></tr>
+              <tr><td>Load</td><td>Pre-load the selected model into VRAM. Eliminates the cold-start delay on the first use.</td></tr>
               <tr><td>↻</td><td>Refresh the model list from Ollama. Also useful after pulling a new model with <code>ollama pull</code>.</td></tr>
             </table>
-            <div class="help-tip">For dual P40 GPUs, target 2× 30B Qwen or 1× 70B Qwen. Set <code>DEFAULT_MODEL</code> and <code>EXTRACT_MODEL</code> in <code>docker-compose.yml</code>.</div>
+            <div class="help-tip">For dual P40 GPUs, target 2× 30B Qwen or 1× 70B Qwen. Set <code>DEFAULT_MODEL</code> and <code>ANALYSIS_MODEL</code> in <code>docker-compose.yml</code> as defaults; override them live with the selectors above.</div>
           </div>
 
           <div class="help-section">

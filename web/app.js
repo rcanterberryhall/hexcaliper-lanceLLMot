@@ -5,6 +5,7 @@ const form          = document.getElementById('composer');
 const input         = document.getElementById('input');
 const sendBtn       = document.getElementById('send-btn');
 const modelSel      = document.getElementById('model-select');
+const analysisSel   = document.getElementById('analysis-select');
 const convList      = document.getElementById('conv-list');
 const newChatBtn    = document.getElementById('new-chat-btn');
 const sidebarToggle = document.getElementById('sidebar-toggle');
@@ -19,6 +20,9 @@ const gpuMeters     = document.getElementById('gpu-meters');
 const modelDot        = document.getElementById('model-dot');
 const modelDotLabel   = document.getElementById('model-dot-label');
 const loadModelBtn    = document.getElementById('load-model-btn');
+const analysisDot     = document.getElementById('analysis-dot');
+const analysisDotLabel = document.getElementById('analysis-dot-label');
+const loadAnalysisBtn  = document.getElementById('load-analysis-btn');
 const refreshModelsBtn = document.getElementById('refresh-models-btn');
 const errorBar      = document.getElementById('error-bar');
 const errorBarText  = document.getElementById('error-bar-text');
@@ -719,7 +723,7 @@ async function _uploadDoc(file, listEl, conversationId) {
     placeholder.remove();
     if (conversationId) await fetchChatDocuments(conversationId);
     else await fetchDocuments();
-    await pollModelStatus();
+    await Promise.all([pollModelStatus(), pollAnalysisModelStatus()]);
   }
 }
 
@@ -1152,21 +1156,68 @@ async function fetchModels() {
     const res = await fetch('/api/models');
     if (!res.ok) return;
     const { models } = await res.json();
-    const saved = localStorage.getItem('selectedModel');
-    modelSel.innerHTML = '';
+    const savedChat     = localStorage.getItem('selectedModel');
+    const savedAnalysis = localStorage.getItem('analysisModel');
+    modelSel.innerHTML    = '';
+    analysisSel.innerHTML = '';
     for (const name of models) {
-      const opt = document.createElement('option');
-      opt.value = name;
-      opt.textContent = name;
-      if (name === saved) opt.selected = true;
-      modelSel.appendChild(opt);
+      const optChat = document.createElement('option');
+      optChat.value = name;
+      optChat.textContent = name;
+      if (name === savedChat) optChat.selected = true;
+      modelSel.appendChild(optChat);
+
+      const optAnalysis = document.createElement('option');
+      optAnalysis.value = name;
+      optAnalysis.textContent = name;
+      if (name === savedAnalysis) optAnalysis.selected = true;
+      analysisSel.appendChild(optAnalysis);
+    }
+    // Notify the backend of the current analysis model selection.
+    if (analysisSel.value) {
+      fetch('/api/set-analysis-model', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: analysisSel.value }),
+      }).catch(() => {});
     }
   } catch (_) {}
+}
+
+async function pollAnalysisModelStatus() {
+  const model = analysisSel.value;
+  if (!model) return;
+  if (uploadInProgress) return;
+  try {
+    const res = await fetch(`/api/model-status?model=${encodeURIComponent(model)}`);
+    if (!res.ok) return;
+    const { loaded } = await res.json();
+    analysisDot.className = 'model-dot ' + (loaded ? 'loaded' : 'unloaded');
+    analysisDotLabel.textContent = loaded ? 'Ready' : 'Not loaded';
+    analysisDotLabel.className = 'model-dot-label ' + (loaded ? 'loaded' : 'unloaded');
+  } catch (_) {
+    analysisDot.className = 'model-dot';
+    analysisDotLabel.textContent = 'Unknown';
+    analysisDotLabel.className = 'model-dot-label';
+  }
 }
 
 modelSel.addEventListener('change', () => {
   localStorage.setItem('selectedModel', modelSel.value);
   pollModelStatus();
+});
+
+analysisSel.addEventListener('change', async () => {
+  const model = analysisSel.value;
+  localStorage.setItem('analysisModel', model);
+  try {
+    await fetch('/api/set-analysis-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+  } catch (_) {}
+  pollAnalysisModelStatus();
 });
 
 loadModelBtn.addEventListener('click', async () => {
@@ -1194,12 +1245,37 @@ loadModelBtn.addEventListener('click', async () => {
   }
 });
 
+loadAnalysisBtn.addEventListener('click', async () => {
+  const model = analysisSel.value;
+  if (!model) return;
+  loadAnalysisBtn.disabled = true;
+  analysisDotLabel.textContent = 'Loading…';
+  analysisDotLabel.className = 'model-dot-label';
+  analysisDot.className = 'model-dot unloaded';
+  try {
+    const res = await fetch('/api/warm-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      showErrorBar(err.detail || 'Failed to load analysis model');
+    }
+  } catch (err) {
+    showErrorBar(`Load error: ${err.message}`);
+  } finally {
+    loadAnalysisBtn.disabled = false;
+    await pollAnalysisModelStatus();
+  }
+});
+
 refreshModelsBtn.addEventListener('click', async () => {
   refreshModelsBtn.disabled = true;
   refreshModelsBtn.textContent = '…';
   try {
     await fetchModels();
-    await pollModelStatus();
+    await Promise.all([pollModelStatus(), pollAnalysisModelStatus()]);
   } finally {
     refreshModelsBtn.disabled = false;
     refreshModelsBtn.textContent = '↻';
@@ -2762,7 +2838,7 @@ async function applySiteConfig() {
 }
 
 applySiteConfig();
-fetchModels().then(pollModelStatus);
+fetchModels().then(() => Promise.all([pollModelStatus(), pollAnalysisModelStatus()]));
 fetchConversations();
 fetchDocuments();
 pollGpu();
@@ -2770,4 +2846,5 @@ setInterval(pollGpu, 3000);
 pollSystem();
 setInterval(pollSystem, 3000);
 setInterval(pollModelStatus, 5000);
+setInterval(pollAnalysisModelStatus, 5000);
 input.focus();

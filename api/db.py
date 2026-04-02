@@ -11,10 +11,12 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 import config
+import crypto
 
 lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -77,7 +79,63 @@ def _create_schema(c: sqlite3.Connection) -> None:
         scope_id          TEXT,
         doc_type          TEXT NOT NULL DEFAULT 'misc',
         summary           TEXT NOT NULL DEFAULT '',
-        copyright_notices TEXT NOT NULL DEFAULT '[]'
+        copyright_notices TEXT NOT NULL DEFAULT '[]',
+        classification    TEXT NOT NULL DEFAULT 'client'
+    );
+
+    CREATE TABLE IF NOT EXISTS library_items (
+        id           TEXT PRIMARY KEY,
+        manufacturer TEXT NOT NULL,
+        product_id   TEXT NOT NULL,
+        doc_type     TEXT NOT NULL,
+        version      TEXT,
+        filename     TEXT NOT NULL,
+        filepath     TEXT NOT NULL,
+        source_url   TEXT,
+        checksum     TEXT,
+        indexed      INTEGER NOT NULL DEFAULT 0,
+        source       TEXT    NOT NULL DEFAULT '',
+        created_at   TEXT NOT NULL,
+        updated_at   TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_library_mfr     ON library_items(manufacturer);
+    CREATE INDEX IF NOT EXISTS idx_library_product ON library_items(manufacturer, product_id);
+
+    CREATE TABLE IF NOT EXISTS acquisition_queue (
+        id           TEXT PRIMARY KEY,
+        manufacturer TEXT NOT NULL,
+        product_id   TEXT NOT NULL,
+        doc_type     TEXT,
+        source_url   TEXT,
+        reason       TEXT,
+        project_id   TEXT,
+        status       TEXT NOT NULL DEFAULT 'pending_approval',
+        requested_at TEXT NOT NULL,
+        approved_at  TEXT,
+        completed_at TEXT,
+        error        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_acq_status ON acquisition_queue(status);
+
+    CREATE TABLE IF NOT EXISTS escalation_queue (
+        id              TEXT PRIMARY KEY,
+        query_text      TEXT NOT NULL,
+        source_doc_ids  TEXT NOT NULL DEFAULT '[]',
+        has_client_docs INTEGER NOT NULL DEFAULT 0,
+        conversation_id TEXT,
+        status          TEXT NOT NULL DEFAULT 'pending_approval',
+        requested_at    TEXT NOT NULL,
+        approved_at     TEXT,
+        completed_at    TEXT,
+        response        TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_esc_status ON escalation_queue(status);
+
+    CREATE TABLE IF NOT EXISTS connections (
+        id      TEXT PRIMARY KEY,
+        type    TEXT NOT NULL UNIQUE,
+        enabled INTEGER NOT NULL DEFAULT 0,
+        config  TEXT NOT NULL DEFAULT '{}'
     );
 
     CREATE INDEX IF NOT EXISTS idx_docs_user  ON documents(user_email);
@@ -118,6 +176,29 @@ def _create_schema(c: sqlite3.Connection) -> None:
     """)
 
 
+# ── Schema migrations ─────────────────────────────────────────────────────────
+
+def migrate_classification_column() -> None:
+    """
+    Add the ``classification`` column to ``documents`` for databases created
+    before this column existed.  Idempotent — safe to call on every startup.
+
+    All existing documents default to ``'client'`` (the safe conservative
+    choice).  Standards (``doc_type='standard'``) that are global-scoped are
+    then reclassified to ``'public'`` automatically.
+    """
+    c = conn()
+    cols = {row[1] for row in c.execute("PRAGMA table_info(documents)").fetchall()}
+    if "classification" in cols:
+        return
+    c.execute("ALTER TABLE documents ADD COLUMN classification TEXT NOT NULL DEFAULT 'client'")
+    # Reclassify global-scoped standards as public — they are never private.
+    c.execute(
+        "UPDATE documents SET classification='public' "
+        "WHERE scope_type='global' AND doc_type='standard'"
+    )
+
+
 # ── Concept scope backfill ────────────────────────────────────────────────────
 
 def migrate_concept_scope() -> None:
@@ -137,6 +218,43 @@ def migrate_concept_scope() -> None:
         "INSERT OR IGNORE INTO concept_scope (concept_label, scope_type, scope_id) VALUES (?,?,?)",
         [(r[0].lower().strip(), "global", "") for r in rows],
     )
+
+
+def migrate_credentials_encryption() -> None:
+    """
+    Encrypt any plain-text credential fields in existing connection configs.
+
+    Idempotent — values that already appear to be Fernet tokens are skipped.
+    No-op when CREDENTIALS_KEY is not configured.
+    """
+    import config as _cfg
+    if not _cfg.CREDENTIALS_KEY:
+        return
+    with lock:
+        rows = conn().execute("SELECT id, config FROM connections").fetchall()
+        for row in rows:
+            try:
+                cfg_dict = json.loads(row["config"])
+            except (json.JSONDecodeError, TypeError):
+                continue
+            encrypted = crypto.encrypt_config(cfg_dict)
+            if encrypted != cfg_dict:
+                conn().execute(
+                    "UPDATE connections SET config=? WHERE id=?",
+                    (json.dumps(encrypted), row["id"]),
+                )
+
+
+def migrate_library_source_column() -> None:
+    """
+    Add the ``source`` column to ``library_items`` for databases created before
+    this column existed.  Idempotent — safe to call on every startup.
+    Items added by web scrapers default to ``''``; M-Files items use ``'mfiles'``.
+    """
+    c = conn()
+    cols = {row[1] for row in c.execute("PRAGMA table_info(library_items)").fetchall()}
+    if "source" not in cols:
+        c.execute("ALTER TABLE library_items ADD COLUMN source TEXT NOT NULL DEFAULT ''")
 
 
 # ── TinyDB migration ──────────────────────────────────────────────────────────
@@ -282,13 +400,20 @@ def insert_document(doc: dict) -> None:
     conn().execute(
         "INSERT INTO documents "
         "(id,user_email,filename,size_bytes,chunk_count,created_at,"
-        " scope_type,scope_id,doc_type,summary,copyright_notices) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        " scope_type,scope_id,doc_type,summary,copyright_notices,classification) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
         (doc["id"], doc["user_email"], doc["filename"],
          doc.get("size_bytes",0), doc.get("chunk_count",0), doc["created_at"],
          doc.get("scope_type","global"), doc.get("scope_id"),
          doc.get("doc_type","misc"), doc.get("summary",""),
-         json.dumps(doc.get("copyright_notices") or [])))
+         json.dumps(doc.get("copyright_notices") or []),
+         doc.get("classification","client")))
+
+
+def update_document(doc_id: str, fields: dict) -> None:
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [doc_id]
+    conn().execute(f"UPDATE documents SET {sets} WHERE id=?", vals)
 
 
 def delete_document(doc_id: str) -> None:
@@ -353,6 +478,198 @@ def insert_project(project_id: str, name: str, client_id: str) -> dict:
 
 def delete_project(project_id: str) -> None:
     conn().execute("DELETE FROM projects WHERE id=?", (project_id,))
+
+
+# ── Library items ─────────────────────────────────────────────────────────────
+
+def list_library_items(
+    manufacturer: Optional[str] = None,
+    product_id:   Optional[str] = None,
+    doc_type:     Optional[str] = None,
+    public_only:  bool = False,
+) -> list[dict]:
+    clauses, params = [], []
+    if manufacturer:
+        clauses.append("manufacturer=?"); params.append(manufacturer)
+    if product_id:
+        clauses.append("product_id=?");   params.append(product_id)
+    if doc_type:
+        clauses.append("doc_type=?");     params.append(doc_type)
+    if public_only:
+        clauses.append("source != 'mfiles'")
+    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+    rows = conn().execute(
+        f"SELECT * FROM library_items {where} ORDER BY manufacturer, product_id, filename",
+        params,
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_library_item(item_id: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM library_items WHERE id=?", (item_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_library_item(item: dict) -> None:
+    ts = _now_iso()
+    conn().execute(
+        "INSERT INTO library_items "
+        "(id,manufacturer,product_id,doc_type,version,filename,filepath,"
+        " source_url,checksum,indexed,source,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (item["id"], item["manufacturer"], item["product_id"], item["doc_type"],
+         item.get("version"), item["filename"], item["filepath"],
+         item.get("source_url"), item.get("checksum"),
+         item.get("indexed", 0), item.get("source", ""), ts, ts),
+    )
+
+
+def update_library_item(item_id: str, fields: dict) -> None:
+    fields = {**fields, "updated_at": _now_iso()}
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [item_id]
+    conn().execute(f"UPDATE library_items SET {sets} WHERE id=?", vals)
+
+
+def delete_library_item(item_id: str) -> None:
+    conn().execute("DELETE FROM library_items WHERE id=?", (item_id,))
+
+
+def list_library_manufacturers(public_only: bool = False) -> list[dict]:
+    """Return distinct manufacturers with product counts."""
+    where = "WHERE source != 'mfiles'" if public_only else ""
+    rows = conn().execute(
+        f"SELECT manufacturer, COUNT(DISTINCT product_id) AS product_count, "
+        f"COUNT(*) AS doc_count FROM library_items {where} "
+        f"GROUP BY manufacturer ORDER BY manufacturer"
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── Acquisition queue ─────────────────────────────────────────────────────────
+
+def list_acquisition_queue(status: Optional[str] = None) -> list[dict]:
+    if status:
+        rows = conn().execute(
+            "SELECT * FROM acquisition_queue WHERE status=? ORDER BY requested_at DESC",
+            (status,),
+        ).fetchall()
+    else:
+        rows = conn().execute(
+            "SELECT * FROM acquisition_queue ORDER BY requested_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_acquisition_item(item_id: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM acquisition_queue WHERE id=?", (item_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_acquisition_item(item: dict) -> None:
+    ts = _now_iso()
+    conn().execute(
+        "INSERT INTO acquisition_queue "
+        "(id,manufacturer,product_id,doc_type,source_url,reason,project_id,"
+        " status,requested_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (item["id"], item["manufacturer"], item["product_id"],
+         item.get("doc_type"), item.get("source_url"), item.get("reason"),
+         item.get("project_id"), item.get("status", "pending_approval"), ts),
+    )
+
+
+def update_acquisition_item(item_id: str, fields: dict) -> None:
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [item_id]
+    conn().execute(f"UPDATE acquisition_queue SET {sets} WHERE id=?", vals)
+
+
+# ── Escalation queue ─────────────────────────────────────────────────────────
+
+def list_escalation_queue(status: Optional[str] = None) -> list[dict]:
+    if status:
+        rows = conn().execute(
+            "SELECT * FROM escalation_queue WHERE status=? ORDER BY requested_at DESC",
+            (status,),
+        ).fetchall()
+    else:
+        rows = conn().execute(
+            "SELECT * FROM escalation_queue ORDER BY requested_at DESC"
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_escalation_item(item_id: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM escalation_queue WHERE id=?", (item_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_escalation_item(item: dict) -> None:
+    ts = _now_iso()
+    conn().execute(
+        "INSERT INTO escalation_queue "
+        "(id,query_text,source_doc_ids,has_client_docs,conversation_id,status,requested_at) "
+        "VALUES (?,?,?,?,?,?,?)",
+        (item["id"], item["query_text"],
+         json.dumps(item.get("source_doc_ids") or []),
+         1 if item.get("has_client_docs") else 0,
+         item.get("conversation_id"), item.get("status", "pending_approval"), ts),
+    )
+
+
+def update_escalation_item(item_id: str, fields: dict) -> None:
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [item_id]
+    conn().execute(f"UPDATE escalation_queue SET {sets} WHERE id=?", vals)
+
+
+# ── Connections ───────────────────────────────────────────────────────────────
+
+def _parse_conn_row(d: dict) -> dict:
+    """Parse the JSON config blob and decrypt credential fields."""
+    try:
+        d["config"] = json.loads(d["config"])
+    except (json.JSONDecodeError, TypeError):
+        d["config"] = {}
+    d["config"] = crypto.decrypt_config(d["config"])
+    return d
+
+
+def list_connections() -> list[dict]:
+    rows = conn().execute("SELECT * FROM connections ORDER BY type").fetchall()
+    return [_parse_conn_row(dict(r)) for r in rows]
+
+
+def get_connection(conn_type: str) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM connections WHERE type=?", (conn_type,)
+    ).fetchone()
+    if not row:
+        return None
+    return _parse_conn_row(dict(row))
+
+
+def upsert_connection(conn_type: str, cfg: dict, enabled: bool = False) -> None:
+    existing = get_connection(conn_type)
+    row_id   = existing["id"] if existing else str(uuid.uuid4())
+    encrypted_cfg = crypto.encrypt_config(cfg)
+    conn().execute(
+        "INSERT INTO connections (id,type,enabled,config) VALUES (?,?,?,?) "
+        "ON CONFLICT(type) DO UPDATE SET config=excluded.config, enabled=excluded.enabled",
+        (row_id, conn_type, 1 if enabled else 0, json.dumps(encrypted_cfg)),
+    )
+
+
+def set_connection_enabled(conn_type: str, enabled: bool) -> None:
+    conn().execute(
+        "UPDATE connections SET enabled=? WHERE type=?", (1 if enabled else 0, conn_type)
+    )
 
 
 # ── Graph nodes & edges (used by graph.py) ────────────────────────────────────

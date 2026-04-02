@@ -11,7 +11,7 @@ from pydantic import BaseModel
 
 import db
 
-router = APIRouter(prefix="/library")
+router = APIRouter(prefix="/workspace")
 
 
 class ClientIn(BaseModel):

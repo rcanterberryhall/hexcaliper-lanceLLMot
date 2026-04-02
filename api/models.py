@@ -8,6 +8,7 @@ import config
 DOC_TYPES = (
     "standard", "requirement", "theop", "fmea", "hazard_analysis",
     "fat", "sat", "contract", "correspondence", "plc_code", "misc",
+    "technical_manual", "datasheet", "firmware_notes", "app_note",
 )
 
 

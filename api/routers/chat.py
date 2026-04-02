@@ -109,6 +109,8 @@ async def chat(req: ChatRequest, request: Request):
     with db.lock:
         all_docs = db.list_documents_for_scope(user_email, scope_types, scope_ids)
 
+    has_client_docs = any(d.get("classification") == "client" for d in all_docs)
+
     # Graph context
     graph_chunks:      list[str] = []
     graph_context_str: str       = ""
@@ -299,7 +301,8 @@ async def chat(req: ChatRequest, request: Request):
             yield _sse({"type": "error", "detail": "Ollama returned an empty reply."}); return
         _save_to_db()
         sources["web_searches"] = search_queries
-        yield _sse({"type": "done", "conversation_id": conv_id, "model": model, "sources": sources})
+        yield _sse({"type": "done", "conversation_id": conv_id, "model": model, "sources": sources,
+                    "doc_ids": list(dict.fromkeys(doc_ids)), "has_client_docs": has_client_docs})
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
