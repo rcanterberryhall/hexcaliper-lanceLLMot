@@ -1057,6 +1057,32 @@ async function pollSystem() {
   } catch (_) { document.getElementById('sys-meter-cpu')?.classList.add('unavailable'); }
 }
 
+// ── merLLM status indicator ────────────────────────────────────
+async function pollMerllm() {
+  const dot   = document.getElementById('merllm-dot');
+  const label = document.getElementById('merllm-label');
+  if (!dot || !label) return;
+  try {
+    const res = await fetch('/api/merllm/status');
+    if (!res.ok) throw new Error(res.status);
+    const d = await res.json();
+    const mode = d.mode || 'unknown';
+    dot.className = 'merllm-dot ' + mode;
+    const queue = d.queue?.total ?? 0;
+    label.textContent = 'merLLM' + (queue > 0 ? ` (${queue})` : '');
+    label.title = `Mode: ${mode}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+    if (d.warnings?.length) {
+      dot.style.boxShadow = '0 0 0 2px rgba(210,153,34,.4)';
+    } else {
+      dot.style.boxShadow = '';
+    }
+  } catch (_) {
+    dot.className = 'merllm-dot unknown';
+    label.textContent = 'merLLM';
+    label.title = 'merLLM unreachable';
+  }
+}
+
 // ── Error bar ─────────────────────────────────────────────────
 /**
  * Displays a message in the error bar at the top of the chat panel.
@@ -2847,4 +2873,6 @@ pollSystem();
 setInterval(pollSystem, 3000);
 setInterval(pollModelStatus, 5000);
 setInterval(pollAnalysisModelStatus, 5000);
+pollMerllm();
+setInterval(pollMerllm, 15000);
 input.focus();

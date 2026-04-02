@@ -2194,3 +2194,36 @@ tr.wb-editing td { opacity: 0.5; }
   text-transform: uppercase;
   vertical-align: middle;
 }
+
+/* ── merLLM status indicator ─────────────────────────────────────────────── */
+.merllm-indicator {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 10px;
+  border-left: 1px solid var(--border2, rgba(255,255,255,.08));
+  border-right: 1px solid var(--border2, rgba(255,255,255,.08));
+  text-decoration: none;
+  color: var(--muted, #8b949e);
+  font-size: 10px;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  transition: color .2s;
+  cursor: pointer;
+}
+.merllm-indicator:hover { color: var(--text, #e6edf3); }
+
+.merllm-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--muted, #555);
+  flex-shrink: 0;
+  transition: background .3s;
+}
+.merllm-dot.day          { background: #3fb950; }
+.merllm-dot.night        { background: #a78bfa; }
+.merllm-dot.transitioning{ background: #d29922; }
+.merllm-dot.unknown      { background: #555; }
+
+@media (max-width: 768px) { .merllm-indicator { display: none; } }

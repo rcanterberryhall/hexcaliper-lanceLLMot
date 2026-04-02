@@ -3,6 +3,7 @@ routers/health.py — System health, model management, and GPU endpoints.
 """
 from fastapi import APIRouter, HTTPException, Request
 
+import httpx
 import psutil
 psutil.cpu_percent()  # prime interval counter so first real call is accurate
 
@@ -61,6 +62,17 @@ async def set_analysis_model(request: Request):
 @router.get("/model-status")
 async def get_model_status(model: str = ""):
     return await ollama.model_status(model)
+
+
+@router.get("/merllm/status")
+async def merllm_status():
+    """Proxy GET /api/merllm/status from merLLM for the frontend status indicator."""
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(f"{config.MERLLM_URL}/api/merllm/status")
+            return r.json()
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "mode": "unknown"}
 
 
 @router.post("/warm-model")

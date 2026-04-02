@@ -15,13 +15,14 @@ services:
   api:
     build: ./api
     # host.docker.internal resolves to the host gateway so the api container
-    # can reach Ollama running on the host at port 11434.
+    # can reach merLLM (and through it, Ollama) running on the host.
     extra_hosts:
       - "host.docker.internal:host-gateway"
     environment:
-      OLLAMA_BASE_URL: "http://host.docker.internal:11434"
+      OLLAMA_BASE_URL: "http://host.docker.internal:11400"
+      MERLLM_URL:      "http://host.docker.internal:11400"
       LD_LIBRARY_PATH: "/app:/usr/local/lib"
-      DEFAULT_MODEL: "llama3:8b"
+      DEFAULT_MODEL: "qwen3:32b"
       MAX_INPUT_CHARS: "20000"
       REQUEST_TIMEOUT_SECONDS: "120"
     volumes:
