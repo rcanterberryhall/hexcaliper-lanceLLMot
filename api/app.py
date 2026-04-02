@@ -8,7 +8,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 import config
 import db
 import rag
-from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections
+from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections, system_prompts
 
 app = FastAPI(title="Hexcaliper API", version="4.0.0")
 
@@ -43,7 +43,8 @@ app.include_router(library.router)       # /workspace    — clients & projects
 app.include_router(tech_library.router)  # /library      — technical document store
 app.include_router(acquisition.router)   # /acquisition  — acquisition queue + SSE
 app.include_router(escalation.router)   # /escalation   — cloud escalation queue + SSE
-app.include_router(connections.router)  # /connections  — external system connections
+app.include_router(connections.router)    # /connections  — external system connections
+app.include_router(system_prompts.router) # /system-prompts — saved system prompts
 app.include_router(chat.router)
 
 
@@ -60,4 +61,5 @@ async def startup():
     db.migrate_classification_column()
     db.migrate_library_source_column()
     db.migrate_credentials_encryption()
+    db.migrate_system_prompt_id_column()
     rag.migrate_legacy_scopes()

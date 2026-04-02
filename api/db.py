@@ -131,6 +131,16 @@ def _create_schema(c: sqlite3.Connection) -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_esc_status ON escalation_queue(status);
 
+    CREATE TABLE IF NOT EXISTS system_prompts (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        user_email TEXT NOT NULL,
+        name       TEXT NOT NULL,
+        content    TEXT NOT NULL,
+        created_at REAL NOT NULL,
+        updated_at REAL NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_sp_user ON system_prompts(user_email);
+
     CREATE TABLE IF NOT EXISTS connections (
         id      TEXT PRIMARY KEY,
         type    TEXT NOT NULL UNIQUE,
@@ -243,6 +253,15 @@ def migrate_credentials_encryption() -> None:
                     "UPDATE connections SET config=? WHERE id=?",
                     (json.dumps(encrypted), row["id"]),
                 )
+
+
+def migrate_system_prompt_id_column() -> None:
+    c = conn()
+    cols = {row[1] for row in c.execute("PRAGMA table_info(conversations)").fetchall()}
+    if "system_prompt_id" not in cols:
+        c.execute(
+            "ALTER TABLE conversations ADD COLUMN system_prompt_id INTEGER REFERENCES system_prompts(id)"
+        )
 
 
 def migrate_library_source_column() -> None:
@@ -670,6 +689,51 @@ def set_connection_enabled(conn_type: str, enabled: bool) -> None:
     conn().execute(
         "UPDATE connections SET enabled=? WHERE type=?", (1 if enabled else 0, conn_type)
     )
+
+
+# ── System prompts ───────────────────────────────────────────────────────────
+
+def list_system_prompts(user_email: str) -> list[dict]:
+    rows = conn().execute(
+        "SELECT * FROM system_prompts WHERE user_email=? ORDER BY name",
+        (user_email,),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def get_system_prompt(prompt_id: int) -> Optional[dict]:
+    row = conn().execute(
+        "SELECT * FROM system_prompts WHERE id=?", (prompt_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def insert_system_prompt(user_email: str, name: str, content: str) -> dict:
+    import time
+    ts = time.time()
+    cur = conn().execute(
+        "INSERT INTO system_prompts (user_email, name, content, created_at, updated_at) "
+        "VALUES (?,?,?,?,?)",
+        (user_email, name, content, ts, ts),
+    )
+    return {"id": cur.lastrowid, "user_email": user_email, "name": name,
+            "content": content, "created_at": ts, "updated_at": ts}
+
+
+def update_system_prompt(prompt_id: int, fields: dict) -> None:
+    import time
+    fields = {**fields, "updated_at": time.time()}
+    sets = ", ".join(f"{k}=?" for k in fields)
+    vals = list(fields.values()) + [prompt_id]
+    conn().execute(f"UPDATE system_prompts SET {sets} WHERE id=?", vals)
+
+
+def delete_system_prompt(prompt_id: int) -> None:
+    conn().execute(
+        "UPDATE conversations SET system_prompt_id=NULL WHERE system_prompt_id=?",
+        (prompt_id,),
+    )
+    conn().execute("DELETE FROM system_prompts WHERE id=?", (prompt_id,))
 
 
 # ── Graph nodes & edges (used by graph.py) ────────────────────────────────────

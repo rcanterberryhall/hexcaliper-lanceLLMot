@@ -21,7 +21,7 @@ def test_schema_creates_tables(isolated_db):
     ).fetchall()}
     expected = {"conversations", "clients", "projects", "documents",
                 "library_items", "acquisition_queue", "escalation_queue",
-                "connections", "nodes", "edges", "concept_scope"}
+                "connections", "nodes", "edges", "concept_scope", "system_prompts"}
     assert expected.issubset(tables)
 
 

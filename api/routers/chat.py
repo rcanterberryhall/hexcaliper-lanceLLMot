@@ -149,9 +149,20 @@ async def chat(req: ChatRequest, request: Request):
                 if doc:
                     doc_copyright_notices.extend(doc.get("copyright_notices") or [])
 
+    # Look up saved system prompt on the conversation
+    saved_system: Optional[str] = None
+    with db.lock:
+        _conv_row = db.get_conversation(conv_id)
+        if _conv_row and _conv_row.get("system_prompt_id"):
+            _sp = db.get_system_prompt(_conv_row["system_prompt_id"])
+            if _sp:
+                saved_system = _sp["content"]
+
     # Build message list
     messages = []
-    if req.system:
+    if saved_system:
+        messages.append({"role": "system", "content": saved_system})
+    elif req.system:
         messages.append({"role": "system", "content": req.system.strip()})
     if all_docs:
         doc_lines = [
