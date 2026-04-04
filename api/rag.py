@@ -120,6 +120,7 @@ async def ingest(
     title: str = "",
     uploaded_at: str | None = None,
     doc_type: str = "",
+    skip_concepts: bool = False,
 ) -> int:
     """
     Chunk, embed, and store a document in ChromaDB, then index it in the
@@ -203,21 +204,22 @@ async def ingest(
     with db.lock:
         learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
 
-    # Extract concepts/entities per chunk and index as graph hub nodes.
-    # Failure is non-fatal — each chunk is independently fault-tolerant.
-    for i, chunk in enumerate(chunks):
-        result = await extractor.extract_chunk(chunk, doc_type=doc_type,
-                                               learned_vocab=learned_vocab)
-        if not result.is_empty():
-            graph.index_chunk_concepts(
-                chunk_ids[i],
-                concepts=result.concepts,
-                entities=result.entities,
-                doc_role=result.doc_role,
-                key_assertion=result.key_assertion,
-                scope_type=scope_type,
-                scope_id=scope_id,
-            )
+    if not skip_concepts:
+        # Extract concepts/entities per chunk and index as graph hub nodes.
+        # Failure is non-fatal — each chunk is independently fault-tolerant.
+        for i, chunk in enumerate(chunks):
+            result = await extractor.extract_chunk(chunk, doc_type=doc_type,
+                                                   learned_vocab=learned_vocab)
+            if not result.is_empty():
+                graph.index_chunk_concepts(
+                    chunk_ids[i],
+                    concepts=result.concepts,
+                    entities=result.entities,
+                    doc_role=result.doc_role,
+                    key_assertion=result.key_assertion,
+                    scope_type=scope_type,
+                    scope_id=scope_id,
+                )
 
     return len(chunks)
 

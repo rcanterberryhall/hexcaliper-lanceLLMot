@@ -86,6 +86,7 @@ async def upload_document(
     client_id:       Optional[str] = None,
     doc_type:        str = "misc",
     classification:  Optional[str] = None,
+    defer_index:     bool = False,
 ):
     user_email = _user(request)
     data       = await file.read()
@@ -117,11 +118,16 @@ async def upload_document(
         doc_id, user_email, text,
         scope_type=scope_type, scope_id=scope_id,
         title=filename, uploaded_at=ts, doc_type=doc_type,
+        skip_concepts=defer_index,
     )
-    summary, notices = await asyncio.gather(
-        ollama.summarize_document(text),
-        asyncio.to_thread(copyright_extract.extract, text),
-    )
+    if defer_index:
+        summary  = ""
+        notices  = []
+    else:
+        summary, notices = await asyncio.gather(
+            ollama.summarize_document(text),
+            asyncio.to_thread(copyright_extract.extract, text),
+        )
 
     meta = {
         "id": doc_id, "user_email": user_email, "filename": filename,
