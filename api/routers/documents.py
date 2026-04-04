@@ -2,6 +2,7 @@
 routers/documents.py — Document upload, listing, and deletion.
 """
 import asyncio
+import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -21,6 +22,21 @@ import rag
 from models import DOC_TYPES
 
 router = APIRouter()
+
+# ── Server-side upload tracking ───────────────────────────────────────────────
+# Maps doc_id → {filename, started_at} for every upload currently in progress.
+# Single asyncio event loop — no lock needed.
+_active_uploads: dict[str, dict] = {}
+
+
+def active_upload_snapshot() -> list[dict]:
+    """Return a list of in-progress uploads with elapsed time, newest first."""
+    now = time.time()
+    return sorted(
+        [{"filename": v["filename"], "elapsed_sec": round(now - v["started_at"], 1)}
+         for v in _active_uploads.values()],
+        key=lambda x: x["elapsed_sec"],
+    )
 
 
 def _now_iso() -> str:
@@ -114,20 +130,24 @@ async def upload_document(
     doc_id = str(uuid.uuid4())
     ts     = _now_iso()
 
-    chunk_count = await rag.ingest(
-        doc_id, user_email, text,
-        scope_type=scope_type, scope_id=scope_id,
-        title=filename, uploaded_at=ts, doc_type=doc_type,
-        skip_concepts=defer_index,
-    )
-    if defer_index:
-        summary  = ""
-        notices  = []
-    else:
-        summary, notices = await asyncio.gather(
-            ollama.summarize_document(text),
-            asyncio.to_thread(copyright_extract.extract, text),
+    _active_uploads[doc_id] = {"filename": filename, "started_at": time.time()}
+    try:
+        chunk_count = await rag.ingest(
+            doc_id, user_email, text,
+            scope_type=scope_type, scope_id=scope_id,
+            title=filename, uploaded_at=ts, doc_type=doc_type,
+            skip_concepts=defer_index,
         )
+        if defer_index:
+            summary = ""
+            notices = []
+        else:
+            summary, notices = await asyncio.gather(
+                ollama.summarize_document(text),
+                asyncio.to_thread(copyright_extract.extract, text),
+            )
+    finally:
+        _active_uploads.pop(doc_id, None)
 
     meta = {
         "id": doc_id, "user_email": user_email, "filename": filename,

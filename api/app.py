@@ -9,6 +9,7 @@ import config
 import db
 import rag
 from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections, system_prompts
+from routers.documents import active_upload_snapshot
 
 app = FastAPI(title="LanceLLMot API", version="4.0.0")
 
@@ -46,6 +47,13 @@ app.include_router(escalation.router)   # /escalation   — cloud escalation que
 app.include_router(connections.router)    # /connections  — external system connections
 app.include_router(system_prompts.router) # /system-prompts — saved system prompts
 app.include_router(chat.router)
+
+
+@app.get("/activity")
+async def activity():
+    """Server-side activity state — currently in-progress uploads."""
+    uploads = active_upload_snapshot()
+    return {"uploads": uploads}
 
 
 @app.get("/site-config")

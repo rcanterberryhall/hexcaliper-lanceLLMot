@@ -2068,6 +2068,33 @@ async function triggerExport(fmt) {
 exportMdBtn.addEventListener('click',   () => triggerExport('md'));
 exportJsonBtn.addEventListener('click', () => triggerExport('json'));
 
+// ── Server activity poll ───────────────────────────────────────
+// Reflects actual server state so any browser tab shows the same status.
+
+async function pollActivity() {
+  try {
+    const res = await fetch('/api/activity');
+    if (!res.ok) return;
+    const { uploads } = await res.json();
+    if (!uploads || uploads.length === 0) return;
+
+    // Only update the status bar when the server reports active work —
+    // never clear it here; that's the upload handler's job.
+    const count = uploads.length;
+    const names = uploads.map(u => u.filename);
+    const maxElapsed = Math.max(...uploads.map(u => u.elapsed_sec));
+    const elapsedFmt = maxElapsed >= 60
+      ? `${Math.floor(maxElapsed / 60)}m ${Math.round(maxElapsed % 60)}s`
+      : `${Math.round(maxElapsed)}s`;
+
+    const msg = count === 1
+      ? `Embedding ${names[0]}… (${elapsedFmt})`
+      : `Embedding ${count} files… (${elapsedFmt})`;
+
+    setStatus(msg, 'busy');
+  } catch { /* non-critical */ }
+}
+
 // ── Bootstrap ─────────────────────────────────────────────────
 
 async function applySiteConfig() {
@@ -2087,4 +2114,6 @@ setInterval(pollModelStatus, 5000);
 setInterval(pollAnalysisModelStatus, 5000);
 pollMerllm();
 setInterval(pollMerllm, 15000);
+pollActivity();
+setInterval(pollActivity, 3000);
 input.focus();
