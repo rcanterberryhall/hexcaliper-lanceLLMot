@@ -1,7 +1,7 @@
 # Hexcaliper — Session Handoff
 
-**Date:** 2026-03-31
-**Status:** All planned priorities complete. System is feature-complete for the current roadmap.
+**Date:** 2026-04-04
+**Status:** All planned priorities complete. Roadmap fully closed including Phase 5 deep analysis integration.
 
 ---
 
@@ -41,6 +41,12 @@ scoped vocabulary, conversation management, workspace (clients/projects), stream
 - `X-Site-Mode: library` header — nginx signals library mode; API filters client docs and blocks writes
 - `GET /site-config` — exposes `public_library_mode` flag to the frontend
 - `PUBLIC_LIBRARY_MODE` env var — alternative to nginx header for standalone library deployments
+
+### Phase 5b — Deep Analysis (merLLM batch integration)
+- `routers/health.py` — three new batch proxy routes: `POST /batch/submit`, `GET /batch/status/{job_id}`, `GET /batch/results/{job_id}`
+- `web/app.js` — `addDeepAnalysisBtn()` adds an ⚗ button to every completed assistant message; `_pollDeepAnalysis()` polls `/batch/status/{id}` every 5 s (max 360 polls), fetches result when complete, and inserts it as a new AI message
+- `web/styles.css` — `.deep-btn` (hidden until hover, gold highlight, same pattern as `.escalate-btn`)
+- `api/tests/test_batch_proxy.py` — 8 tests for all three proxy routes (success, 404/409, 502)
 
 ### Phase 6 — UX Improvements
 - Status bar — persistent bottom bar replaces silent failures and `alert()` calls
@@ -135,3 +141,5 @@ ChromaDB collections: `documents`, `library`, `escalation_cache`
 - **SharePoint / WebDAV indexers** — equivalent of `mfiles_indexer.py` for the other two connectors
 - **M-Files incremental sync** — checksum-based delta re-index (currently full re-index only)
 - **Library item attribute editing** — `PATCH /library/items/{id}` for manufacturer, product_id, doc_type, version (parallel to `PATCH /documents/{id}`)
+- **Deep analysis history** — persist submitted batch jobs and completed results so they survive page reload (currently in-memory poll only)
+- **Deep analysis on conversations** — currently triggers on individual messages; could be extended to submit entire conversation context

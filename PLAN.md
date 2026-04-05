@@ -1,6 +1,6 @@
 # Hexcaliper — Development Plan
 
-## Status: All Priorities Complete ✓
+## Status: All Priorities Complete ✓ (last updated 2026-04-04)
 
 ---
 
@@ -53,6 +53,11 @@
 - `GET /site-config`: exposes `public_library_mode` to the frontend
 - `PUBLIC_LIBRARY_MODE` env var: standalone library deployment without nginx header
 - Frontend `applySiteConfig()`: hides Chat/Workbench/Acquisition/Escalation/Connections in library mode
+
+### Phase 5b — Deep Analysis (merLLM batch integration) ✓
+- `routers/health.py` batch proxy: `POST /batch/submit`, `GET /batch/status/{job_id}`, `GET /batch/results/{job_id}` — proxies to merLLM
+- `web/app.js` — `addDeepAnalysisBtn()` inserts ⚗ button on completed assistant messages; `_pollDeepAnalysis()` polls and renders result as a new AI message
+- `web/styles.css` — `.deep-btn` hover styles
 
 ### Phase 6 — UX Polish ✓
 - Status bar: persistent bottom bar with spinner; replaces all `alert()` and silent failures
