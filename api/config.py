@@ -56,6 +56,12 @@ WEBDAV_USERNAME = _get("WEBDAV_USERNAME", "")
 # them unreadable; re-enter all credentials if you rotate the key.
 CREDENTIALS_KEY = _get("CREDENTIALS_KEY", "")
 
+# ── CORS ──────────────────────────────────────────────────────────────────────
+# Comma-separated list of allowed origins, or "*" for all (dev only).
+# Defaults to localhost ports used by the bundled nginx.
+_cors_raw   = _get("CORS_ORIGINS", "http://localhost:8080,http://localhost:8081")
+CORS_ORIGINS = [o.strip() for o in _cors_raw.split(",") if o.strip()]
+
 # ── Public library mode ───────────────────────────────────────────────────────
 # When true (or when the nginx X-Site-Mode: library header is present), the API
 # serves only public library documents and blocks all write operations.

@@ -13,9 +13,13 @@ from routers.documents import active_upload_snapshot
 
 app = FastAPI(title="LanceLLMot API", version="4.0.0")
 
+if config.CORS_ORIGINS == ["*"]:
+    import logging as _logging
+    _logging.getLogger(__name__).warning("CORS_ORIGINS is '*' — all origins allowed. Do not use in production.")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:8080", "http://localhost:8081"],
+    allow_origins=config.CORS_ORIGINS,
     allow_methods=["GET", "POST", "DELETE", "PATCH", "PUT"],
     allow_headers=["Content-Type"],
 )
