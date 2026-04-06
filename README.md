@@ -14,11 +14,15 @@ No data leaves your machine unless you explicitly approve it.
 ### Chat & RAG
 - **Multi-model chat** — switch between any model pulled into your local Ollama instance
 - **GraphRAG** — documents are indexed into a concept graph; retrieval uses both vector similarity and graph traversal for richer context
+- **Retrieval attribution** — after each response, a collapsible "Sources" section shows which documents, chunk snippets, relevance scores, and graph nodes informed the answer; "No documents matched" is shown explicitly when RAG returned zero results
+- **Active scope indicator** — a persistent badge in the chat header shows the current scope (Global / Client / Project / Session), the document count, and a warning when the scope is empty
 - **Scoped documents** — global, client, project, or session scope; each conversation only sees what it should
+- **Library-to-conversation bridge** — attach technical library documents directly to the active conversation from the library browser; reciprocally, browse the library from within a chat session
 - **Document summaries** — every uploaded document gets a model-generated summary injected into every chat so the model always knows what exists
 - **System prompt management** — create, name, and save reusable system prompts; assign one to any conversation via the sidebar; the assigned prompt is prepended as a system message on every chat request
 - **Conversation export** — download any conversation as Markdown (with title, model, system prompt, and timestamped messages) or JSON (full structured payload including system prompt object and message array)
 - **Streaming responses** — tokens stream to the browser via SSE
+- **RAG status reporting** — the first SSE chunk includes a `rag_status` field (`ok` or `error`) with document and graph node counts; failures are logged server-side and surfaced to the client
 - **Thinking model support** — extended reasoning tokens from DeepSeek-R1, QwQ, etc. are shown in a collapsible section
 - **Autonomous web search** — tool-capable models (Qwen3, Qwen2.5, Mistral) search DuckDuckGo automatically when current information is needed
 - **URL fetching** — paste a URL into your message and the page content is fetched and included as context
@@ -58,9 +62,12 @@ No data leaves your machine unless you explicitly approve it.
 
 ### System
 - **Live GPU meter** — real-time utilisation and VRAM per card via NVML (dual P40 supported)
+- **Request logging** — HTTP request logging middleware records method, path, status code, duration, and user email at INFO/WARNING/ERROR levels
 - **Multi-user ready** — user isolation via Cloudflare Access header; falls back to `local@dev`
 - **Status bar** — persistent bottom status bar shows upload feedback, indexer progress, and escalation state
 - **Model status indicator** — shows whether a model is loaded in VRAM; Load button pre-warms it
+- **Configurable CORS** — allowed origins set via `CORS_ORIGINS` env var; supports wildcard for development
+- **Escalation cache eviction** — the ChromaDB escalation semantic cache is capped at `MAX_ESCALATION_CACHE_SIZE` entries; oldest entries are evicted automatically
 - **SQLite + WAL** — all metadata in a single WAL-mode SQLite database; no Postgres required
 - **ChromaDB** — persistent vector store for document chunks, library content, and escalation cache
 
@@ -182,7 +189,7 @@ All tunables are set via environment variables in `docker-compose.yml`:
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API endpoint |
 | `DEFAULT_MODEL` | `llama3:8b` | Model selected on first load |
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
-| `EXTRACT_MODEL` | _(same as DEFAULT_MODEL)_ | Model used for concept extraction |
+| `EXTRACT_MODEL` | _(same as ANALYSIS_MODEL)_ | Model used for graph/concept extraction; set to a smaller model for faster extraction at lower quality |
 | `MAX_INPUT_CHARS` | `20000` | Max characters per user message |
 | `REQUEST_TIMEOUT_SECONDS` | `120` | Ollama request timeout |
 | `DB_PATH` | `/app/data/hexcaliper.db` | SQLite database path |
@@ -223,6 +230,18 @@ When the `*_HOST`/`*_URL` env vars are set, the Connections UI pre-populates the
 
 > **Key rotation warning:** changing or removing `CREDENTIALS_KEY` after credentials have been
 > stored will make them unreadable. Re-enter all connection credentials via the UI if you rotate the key.
+
+### CORS
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `CORS_ORIGINS` | `http://localhost:8080,http://localhost:8081` | Comma-separated list of allowed origins. Set to `*` to allow all origins (development only — a warning is logged). |
+
+### Escalation Cache
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `MAX_ESCALATION_CACHE_SIZE` | `500` | Maximum number of entries in the escalation semantic cache. Oldest entries (by `created_at`) are evicted when this limit is exceeded. |
 
 ### Public Library Mode
 
@@ -377,7 +396,8 @@ Interactive docs: `http://localhost:8000/docs`
 | `POST` | `/warm-model` | Pre-load a model into VRAM |
 | `GET` | `/gpu` | GPU utilisation and VRAM per card |
 | `GET` | `/system` | CPU and RAM stats |
-| `POST` | `/chat` | Streaming chat (SSE) |
+| `POST` | `/chat` | Streaming chat (SSE); emits `rag_status`, `sources`, and `done` events |
+| `GET` | `/status/pending` | Pending items summary for the merLLM "My Day" panel |
 
 ### Conversations
 
@@ -456,6 +476,26 @@ Interactive docs: `http://localhost:8000/docs`
 | `GET` | `/connections/{type}/env-hint` | Check for env-var pre-fill values |
 | `POST` | `/connections/mfiles/index` | Start M-Files vault index (background) |
 | `GET` | `/connections/mfiles/index/stream` | SSE stream for vault indexer progress |
+
+---
+
+## Chat SSE Protocol
+
+The `POST /chat` endpoint streams Server-Sent Events. Beyond the standard token chunks, three metadata events are emitted:
+
+| Event type | When | Payload |
+|------------|------|---------|
+| `rag_status` | Before the first token | `{"type": "rag_status", "status": "ok"|"error", "docs_used": N, "graph_nodes": N}` — reports whether RAG retrieval succeeded and how many sources were found |
+| `sources` | After the last token, before `done` | `{"type": "sources", "documents": [{"name": "...", "chunk": "...", "score": 0.82}], "graph_nodes": [{"entity": "...", "relation": "..."}]}` — full attribution data rendered in the Sources panel |
+| `done` | Final event | `{"type": "done", "conversation_id": "...", "model": "...", "sources": {...}, "doc_ids": [...], "has_client_docs": bool}` |
+
+When merLLM queues the request due to GPU contention, a `queue_status` event may precede all others:
+
+```json
+{"type": "queue_status", "position": 2, "reason": "transitioning to day mode", "estimated_wait_seconds": 35}
+```
+
+The UI displays this as a waiting indicator with the reason and estimated time.
 
 ---
 

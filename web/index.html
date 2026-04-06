@@ -312,6 +312,8 @@
               <tr><td>⚙ (system prompt)</td><td>Set an optional system prompt to give the AI a persona or specific instructions for this conversation.</td></tr>
               <tr><td>Send / ■ Stop</td><td>Send your message. While the AI is responding, the button becomes <strong>■ Stop</strong> to cancel mid-stream.</td></tr>
               <tr><td>Escalate →</td><td>Appears below each assistant response. Sends the query to a cloud model (Anthropic/OpenAI) for a second opinion. Always requires manual approval if client documents were in context.</td></tr>
+              <tr><td>Sources ▸</td><td>Collapsible section below each response showing which documents, chunk snippets, relevance scores, and graph nodes informed the answer. Shows "No documents matched" when RAG returned zero results.</td></tr>
+              <tr><td>Scope badge</td><td>Persistent badge in the chat header showing the active scope (Global / Client:Name / Project:Name / Session), document count, and a ⚠ warning when the scope has zero documents.</td></tr>
               <tr><td>Global Documents +</td><td>Upload a document visible across all conversations (global scope). Good for standards and reference material.</td></tr>
               <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started.</td></tr>
               <tr><td>System Prompt (sidebar)</td><td>Select a saved system prompt to assign it to the active conversation. Use + to create a new prompt, ✎ to edit the selected one. A "SP" badge appears on conversations that have a prompt assigned.</td></tr>
@@ -380,6 +382,15 @@
               <dt>Client</dt><dd>Any client or project file, or anything sourced from M-Files. Cloud escalation always requires explicit manual approval. Never exposed in the public library view.</dd>
             </dl>
             <p>Classification is set automatically at upload based on scope and source, and can be changed afterwards using the ✎ edit button (except for client- and project-scoped documents, which are always client-confidential).</p>
+          </div>
+
+          <div class="help-section">
+            <h3>Library-to-conversation bridge</h3>
+            <p>Technical library documents can be attached directly to the active conversation:</p>
+            <dl class="help-kv">
+              <dt>From Library</dt><dd>Click "Add to conversation" on any document row in the library browser. The document is attached to the current session scope. If no conversation is active, a new one is created.</dd>
+              <dt>From Chat</dt><dd>Use "Browse library" in the chat sidebar to open the library with a filter. Selected documents are attached to the current conversation.</dd>
+            </dl>
           </div>
 
           <div class="help-section">
