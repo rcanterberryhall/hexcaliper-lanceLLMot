@@ -277,6 +277,30 @@ docker compose down
 rm -rf data/
 ```
 
+### Database backup
+
+Back up `hexcaliper.db` while the container is running using the SQLite CLI's
+online backup command (safe with WAL mode):
+
+```bash
+sqlite3 data/hexcaliper.db ".backup 'backups/hexcaliper-$(date +%Y%m%d-%H%M%S).db'"
+```
+
+**Scheduled backup via cron (run on the host):**
+
+```bash
+# Back up every night at 02:30
+30 2 * * * sqlite3 /opt/hexcaliper/data/hexcaliper.db \
+  ".backup '/opt/hexcaliper/backups/hexcaliper-$(date +%Y%m%d-%H%M%S).db'" \
+  >> /var/log/hexcaliper-backup.log 2>&1
+```
+
+Or with the helper script (if present):
+
+```bash
+30 2 * * * /opt/hexcaliper/backup_db.sh >> /var/log/hexcaliper-backup.log 2>&1
+```
+
 ---
 
 ## Document Types
