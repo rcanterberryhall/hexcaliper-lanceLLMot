@@ -1639,6 +1639,7 @@ function renderWbDocs() {
       <td>${date}</td>
       <td>${d.chunk_count}</td>
       <td class="wb-actions">
+        <button class="wb-chat-attach-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Add to current conversation">+ Chat</button>
         <button class="wb-edit-btn" data-id="${d.id}" title="Edit attributes">✎</button>
         <button class="wb-del-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Delete document">✕</button>
       </td>`;
@@ -1752,6 +1753,49 @@ function _openWbEdit(tr, doc) {
 }
 
 wbDocTbody.addEventListener('click', async e => {
+  const attachBtn = e.target.closest('.wb-chat-attach-btn');
+  if (attachBtn) {
+    const docId   = attachBtn.dataset.id;
+    const docName = attachBtn.dataset.name;
+
+    // Ensure a conversation exists — create one if needed.
+    if (!currentConvId) {
+      // Switch to chat tab and start a new conversation placeholder.
+      document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+      document.querySelector('.tab-btn[data-tab="chat"]').classList.add('active');
+      chatView.hidden      = false;
+      workbenchView.hidden = true;
+      newChat();
+      // Assign a provisional conversation so the attach can proceed.
+      // We'll create the real conversation on first message; for now,
+      // open a blank chat so the user sends a message.
+      showErrorBar(`Switched to Chat. Send a message first, then attach "${docName}" again.`, 'info');
+      return;
+    }
+
+    attachBtn.disabled    = true;
+    attachBtn.textContent = '…';
+    try {
+      const res = await fetch(`/api/documents/${docId}/attach`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: currentConvId }),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || `HTTP ${res.status}`);
+      }
+      attachBtn.textContent = '✓';
+      await fetchChatDocuments();
+      updateScopeBadge();
+    } catch (err) {
+      attachBtn.disabled    = false;
+      attachBtn.textContent = '+ Chat';
+      showErrorBar(`Attach failed: ${err.message}`);
+    }
+    return;
+  }
+
   const editBtn = e.target.closest('.wb-edit-btn');
   if (editBtn) {
     const doc = wbDocs.find(d => d.id === editBtn.dataset.id);
@@ -2284,6 +2328,20 @@ fetchModels().then(() => Promise.all([pollModelStatus(), pollAnalysisModelStatus
 fetchConversations();
 fetchDocuments();
 updateScopeBadge();
+
+// "Browse library" button in chat docs header → switch to workbench
+const browseLibraryBtn = document.getElementById('browse-library-btn');
+if (browseLibraryBtn) {
+  browseLibraryBtn.addEventListener('click', () => {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="workbench"]').classList.add('active');
+    chatView.hidden      = false;
+    workbenchView.hidden = false;
+    chatView.hidden      = true;
+    loadWorkbench();
+  });
+}
+
 if (scopeBadge) {
   scopeBadge.addEventListener('click', () => {
     sidebar.classList.remove('collapsed');

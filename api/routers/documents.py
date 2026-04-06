@@ -234,6 +234,82 @@ async def patch_document(doc_id: str, body: DocumentPatch, request: Request):
     }
 
 
+class AttachRequest(BaseModel):
+    conversation_id: str
+
+
+@router.post("/documents/{doc_id}/attach")
+async def attach_document_to_conversation(
+    doc_id:  str,
+    body:    AttachRequest,
+    request: Request,
+):
+    """
+    Copy a document into a conversation's session scope so it is
+    always available to RAG within that conversation, regardless of
+    the conversation's project scope.
+
+    Re-ingests the existing chunks at ``scope_type="session"`` /
+    ``scope_id=conversation_id``.  Returns the new session-scoped
+    document record.
+    """
+    user_email = _user(request)
+
+    with db.lock:
+        src = db.get_document(doc_id)
+    if not src:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if src["user_email"] != user_email:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    # Verify the conversation exists and belongs to this user.
+    with db.lock:
+        conv = db.get_conversation(body.conversation_id)
+    if not conv:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    if conv["user_email"] != user_email:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    # Reconstruct the full text from existing ChromaDB chunks.
+    chunks = rag.get_doc_chunks(doc_id)
+    if not chunks:
+        raise HTTPException(
+            status_code=422,
+            detail="Source document has no indexed chunks — re-index it first.",
+        )
+    full_text = "\n\n".join(text for _, text in sorted(chunks))
+
+    new_doc_id = str(uuid.uuid4())
+    ts         = _now_iso()
+
+    await rag.ingest(
+        new_doc_id, user_email, full_text,
+        scope_type="session", scope_id=body.conversation_id,
+        title=src["filename"], uploaded_at=ts,
+        doc_type=src.get("doc_type", "misc"),
+        skip_concepts=True,   # fast path — reuse the source doc's concepts
+    )
+
+    meta = {
+        "id":           new_doc_id,
+        "user_email":   user_email,
+        "filename":     src["filename"],
+        "size_bytes":   src.get("size_bytes", 0),
+        "chunk_count":  len(chunks),
+        "created_at":   ts,
+        "scope_type":   "session",
+        "scope_id":     body.conversation_id,
+        "doc_type":     src.get("doc_type", "misc"),
+        "classification": src.get("classification", "client"),
+        "summary":      src.get("summary", ""),
+        "copyright_notices": src.get("copyright_notices", []),
+    }
+    with db.lock:
+        db.insert_document(meta)
+
+    return meta
+
+
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, request: Request):
     user_email = _user(request)

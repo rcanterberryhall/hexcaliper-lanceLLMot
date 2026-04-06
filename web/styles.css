@@ -1611,6 +1611,21 @@ body { display: block; }
 
 .wb-actions { white-space: nowrap; }
 
+.wb-chat-attach-btn {
+  background: none;
+  border: 1px solid rgba(64,184,255,0.30);
+  border-radius: 4px;
+  color: var(--blue);
+  cursor: pointer;
+  font-size: 0.75rem;
+  padding: 2px 6px;
+  transition: background 0.15s;
+  white-space: nowrap;
+}
+
+.wb-chat-attach-btn:hover:not(:disabled) { background: rgba(64,184,255,0.10); }
+.wb-chat-attach-btn:disabled { opacity: 0.5; cursor: default; }
+
 .wb-del-btn, .wb-edit-btn {
   background: none;
   border: 1px solid transparent;
