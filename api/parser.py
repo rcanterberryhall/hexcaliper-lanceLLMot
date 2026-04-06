@@ -6,10 +6,13 @@ files: .st, .scl, .lad, .fbd, .il, .sfc and code files: .py, .c, .h).
 """
 import csv
 import io
+import logging
 
 import pypdf
 import docx as python_docx
 import openpyxl
+
+log = logging.getLogger(__name__)
 
 
 def parse_file(filename: str, data: bytes) -> str:
@@ -28,7 +31,8 @@ def parse_file(filename: str, data: bytes) -> str:
             return "\n\n".join(
                 page.extract_text() or "" for page in reader.pages
             ).strip()
-        except Exception:
+        except Exception as exc:
+            log.warning("PDF parse failed: %s", exc)
             return ""
 
     if ext == "docx":
@@ -37,7 +41,8 @@ def parse_file(filename: str, data: bytes) -> str:
             return "\n".join(
                 p.text for p in doc.paragraphs if p.text.strip()
             ).strip()
-        except Exception:
+        except Exception as exc:
+            log.warning("DOCX parse failed: %s", exc)
             return ""
 
     if ext in ("xlsx", "xls"):
@@ -53,7 +58,8 @@ def parse_file(filename: str, data: bytes) -> str:
                     if any(cells):
                         lines.append("\t".join(cells))
             return "\n".join(lines).strip()
-        except Exception:
+        except Exception as exc:
+            log.warning("XLSX parse failed: %s", exc)
             return ""
 
     if ext == "csv":
@@ -61,7 +67,8 @@ def parse_file(filename: str, data: bytes) -> str:
             text = data.decode("utf-8", errors="replace")
             reader = csv.reader(io.StringIO(text))
             return "\n".join("\t".join(row) for row in reader).strip()
-        except Exception:
+        except Exception as exc:
+            log.warning("CSV parse failed, falling back to raw: %s", exc)
             return data.decode("utf-8", errors="replace").strip()
 
     # Plain text, Markdown, PLC source (.st, .scl, .lad, .fbd, .il, .sfc),

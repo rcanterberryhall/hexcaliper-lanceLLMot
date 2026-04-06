@@ -8,6 +8,7 @@ and an optional *scope_id* so that search results can be filtered
 appropriately for each request.
 """
 
+import logging
 import uuid as _uuid
 from datetime import datetime, timezone
 from typing import Optional
@@ -19,6 +20,8 @@ import graph
 import httpx
 
 import config
+
+log = logging.getLogger(__name__)
 
 # Characters per chunk when splitting document text.
 CHUNK_SIZE = 1000
@@ -262,8 +265,8 @@ def migrate_legacy_scopes() -> None:
                 })
         if ids_to_update:
             col.update(ids=ids_to_update, metadatas=new_metas)
-    except Exception:
-        pass
+    except Exception as exc:
+        log.warning("migrate_legacy_scopes: %s", exc)
 
 
 # ── Search ─────────────────────────────────────────────────────
@@ -362,7 +365,8 @@ async def search(
                 chunk_ids.append(cid)
                 scores.append(round(1.0 - dist, 4))
         return chunks, doc_ids, chunk_ids, scores
-    except Exception:
+    except Exception as exc:
+        log.warning("query failed: %s", exc)
         return [], [], [], []
 
 
@@ -382,7 +386,8 @@ def get_doc_chunks(doc_id: str) -> list[tuple[str, str]]:
     try:
         results = col.get(where={"doc_id": doc_id}, include=["documents"])
         return [(cid, doc) for cid, doc in zip(results["ids"], results["documents"]) if doc]
-    except Exception:
+    except Exception as exc:
+        log.warning("get_chunks failed: %s", exc)
         return []
 
 
@@ -391,7 +396,8 @@ def update_chunk_scope(doc_id: str, scope_type: str, scope_id: Optional[str]) ->
     col = get_collection()
     try:
         results = col.get(where={"doc_id": doc_id}, include=["metadatas"])
-    except Exception:
+    except Exception as exc:
+        log.warning("update_chunk_metadata failed: %s", exc)
         return
     if not results["ids"]:
         return
@@ -439,7 +445,8 @@ def get_chunks_by_ids(chunk_ids: list[str]) -> dict[str, str]:
             for cid, doc in zip(results["ids"], results["documents"])
             if doc
         }
-    except Exception:
+    except Exception as exc:
+        log.warning("collection_stats failed: %s", exc)
         return {}
 
 

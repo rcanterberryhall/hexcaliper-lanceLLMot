@@ -52,12 +52,15 @@ Traversal in get_context(chunk_id)
 """
 
 import json
+import logging
 import math
 import re
 from datetime import datetime, timezone
 from typing import Optional
 
 import db
+
+log = logging.getLogger(__name__)
 
 # ── Configuration ──────────────────────────────────────────────────────────────
 
@@ -166,7 +169,8 @@ def _parse_ts(ts: str | None) -> datetime | None:
     try:
         dt = datetime.fromisoformat(ts)
         return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
-    except Exception:
+    except Exception as exc:
+        log.warning("timestamp parse failed: %s", exc)
         return None
 
 

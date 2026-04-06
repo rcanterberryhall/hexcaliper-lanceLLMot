@@ -6,10 +6,13 @@ boilerplate HTML (scripts, nav, footer), and returns trimmed plain text
 so the LLM has useful inline context without being overwhelmed.
 """
 
+import logging
 import re
 
 import httpx
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 # Matches any http/https URL that is at least 4 characters long after the scheme.
 _URL_RE = re.compile(r"https?://[^\s<>\"{}|\\^`\[\]]{4,}")
@@ -71,7 +74,8 @@ async def fetch_url(url: str) -> str | None:
         else:
             text = resp.text
         return text[:MAX_CHARS]
-    except Exception:
+    except Exception as exc:
+        log.warning("fetch failed: %s", exc)
         return None
 
 

@@ -6,8 +6,12 @@ search results (title, URL, snippet) that can be injected into the chat
 prompt as grounding context.
 """
 
+import logging
+
 import httpx
 from bs4 import BeautifulSoup
+
+log = logging.getLogger(__name__)
 
 # Maximum number of search results to return per query.
 MAX_RESULTS = 5
@@ -65,7 +69,8 @@ def search(query: str, max_results: int = MAX_RESULTS) -> list[dict]:
             if len(results) >= max_results:
                 break
         return results
-    except Exception:
+    except Exception as exc:
+        log.warning("web search failed: %s", exc)
         return []
 
 

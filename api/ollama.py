@@ -5,11 +5,14 @@ Provides: document summarisation, model listing/warming, GPU stats,
 and the low-level async streaming helper used by the chat router.
 """
 import json
+import logging
 from typing import AsyncIterator
 
 import httpx
 
 import config
+
+log = logging.getLogger(__name__)
 
 
 async def list_models() -> list[str]:
@@ -37,7 +40,8 @@ async def model_status(model: str) -> dict:
             if m.get("name") != model and m.get("model") != model
         ]
         return {"model": model, "loaded": loaded, "active": active}
-    except Exception:
+    except Exception as exc:
+        log.warning("model_info failed: %s", exc)
         return {"model": model, "loaded": False}
 
 
@@ -69,7 +73,8 @@ async def summarize_document(text: str, model: str = "") -> str:
             )
         resp.raise_for_status()
         return resp.json()["message"]["content"].strip()
-    except Exception:
+    except Exception as exc:
+        log.warning("classify failed: %s", exc)
         return ""
 
 

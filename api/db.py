@@ -8,6 +8,7 @@ own connection.
 Tables: conversations, clients, projects, documents, nodes, edges
 """
 import json
+import logging
 import os
 import sqlite3
 import threading
@@ -17,6 +18,8 @@ from typing import Optional
 
 import config
 import crypto
+
+log = logging.getLogger(__name__)
 
 lock = threading.Lock()
 _conn: Optional[sqlite3.Connection] = None
@@ -286,7 +289,8 @@ def migrate_from_tinydb() -> None:
     try:
         with open(legacy) as f:
             data = json.load(f)
-    except Exception:
+    except Exception as exc:
+        log.warning("migrate_from_tinydb: %s", exc)
         return
 
     c = conn()
@@ -304,8 +308,8 @@ def migrate_from_tinydb() -> None:
                      row.get("updated_at", _now_iso()),
                      json.dumps(row.get("messages", []))),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("tinydb conversation migration: %s", exc)
 
         for row in data.get("documents", {}).get("_default", {}).values():
             old_scope = row.get("scope", "global")
@@ -329,8 +333,8 @@ def migrate_from_tinydb() -> None:
                      row.get("doc_type","misc"), row.get("summary",""),
                      json.dumps(row.get("copyright_notices") or [])),
                 )
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("tinydb document migration: %s", exc)
 
 
 # ── Conversations ─────────────────────────────────────────────────────────────
@@ -373,7 +377,8 @@ def _conv(d: dict) -> dict:
     if isinstance(d.get("messages"), str):
         try:
             d["messages"] = json.loads(d["messages"])
-        except Exception:
+        except Exception as exc:
+            log.warning("messages JSON parse: %s", exc)
             d["messages"] = []
     return d
 
@@ -443,7 +448,8 @@ def _doc(d: dict) -> dict:
     if isinstance(d.get("copyright_notices"), str):
         try:
             d["copyright_notices"] = json.loads(d["copyright_notices"])
-        except Exception:
+        except Exception as exc:
+            log.warning("copyright_notices JSON parse: %s", exc)
             d["copyright_notices"] = []
     return d
 
@@ -838,7 +844,8 @@ def get_node(node_id: str) -> Optional[dict]:
     if isinstance(d.get("properties"), str):
         try:
             d["properties"] = json.loads(d["properties"])
-        except Exception:
+        except Exception as exc:
+            log.warning("properties JSON parse: %s", exc)
             d["properties"] = {}
     return d
 

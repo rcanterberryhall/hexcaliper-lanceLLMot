@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 _req_log = logging.getLogger("hexcaliper.requests")
+_log = logging.getLogger("hexcaliper")
 
 import config
 import db
@@ -93,6 +94,27 @@ async def site_config(request: Request):
 @app.on_event("startup")
 async def startup():
     db.conn()
+
+    # Startup diagnostics: database integrity
+    try:
+        integrity = db.conn().execute("PRAGMA integrity_check").fetchone()
+        if integrity and integrity[0] != "ok":
+            _log.error("database integrity check failed: %s", integrity[0])
+        else:
+            _log.info("database integrity check passed")
+    except Exception as exc:
+        _log.error("database integrity check error: %s", exc)
+
+    # Startup diagnostics: check Ollama reachability
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+            r = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
+            models = len(r.json().get("models", []))
+            _log.info("Ollama reachable (%d models)", models)
+    except Exception as exc:
+        _log.warning("Ollama unreachable at startup: %s", exc)
+
     db.migrate_from_tinydb()
     db.migrate_classification_column()
     db.migrate_library_source_column()
