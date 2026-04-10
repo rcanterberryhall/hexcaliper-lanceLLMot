@@ -10,6 +10,7 @@ def _get(key: str, default: str = "") -> str:
 
 
 OLLAMA_BASE_URL = _get("OLLAMA_BASE_URL", "http://host.docker.internal:11400")
+OLLAMA_HEADERS  = {"X-Source": "lancellmot"}
 MERLLM_URL      = _get("MERLLM_URL",      "http://host.docker.internal:11400")
 DEFAULT_MODEL   = _get("DEFAULT_MODEL", "qwen3:32b")
 ANALYSIS_MODEL  = _get("ANALYSIS_MODEL", "") or DEFAULT_MODEL

@@ -287,7 +287,7 @@ async def chat(req: ChatRequest, request: Request):
                     db.update_conversation(conv_id, fields)
 
         try:
-            async with httpx.AsyncClient(timeout=config.REQUEST_TIMEOUT) as client:
+            async with httpx.AsyncClient(timeout=config.REQUEST_TIMEOUT, headers=config.OLLAMA_HEADERS) as client:
                 first_payload        = {**payload, "tools": [WEB_SEARCH_TOOL]}
                 tool_calls_received: list[dict] = []
                 first_content:       list[str]  = []

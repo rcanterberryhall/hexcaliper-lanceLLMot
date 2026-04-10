@@ -107,7 +107,7 @@ async def embed(text: str) -> list[float]:
     :rtype: list[float]
     :raises httpx.HTTPStatusError: If the Ollama API returns a non-2xx status.
     """
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, headers=config.OLLAMA_HEADERS) as client:
         resp = await client.post(
             f"{config.OLLAMA_BASE_URL}/api/embeddings",
             json={"model": config.EMBED_MODEL, "prompt": text},

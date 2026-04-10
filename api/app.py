@@ -108,7 +108,7 @@ async def startup():
     # Startup diagnostics: check Ollama reachability
     try:
         import httpx
-        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0)) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(5.0), headers=config.OLLAMA_HEADERS) as client:
             r = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
             models = len(r.json().get("models", []))
             _log.info("Ollama reachable (%d models)", models)

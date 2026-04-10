@@ -18,7 +18,7 @@ log = logging.getLogger(__name__)
 async def list_models() -> list[str]:
     """Return chat-capable model names, filtering out embedding models."""
     _EMBED_PREFIXES = ("nomic-", "mxbai-", "all-minilm")
-    async with httpx.AsyncClient(timeout=10.0) as client:
+    async with httpx.AsyncClient(timeout=10.0, headers=config.OLLAMA_HEADERS) as client:
         resp = await client.get(f"{config.OLLAMA_BASE_URL}/api/tags")
     resp.raise_for_status()
     names = [
@@ -30,7 +30,7 @@ async def list_models() -> list[str]:
 
 async def model_status(model: str) -> dict:
     try:
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=5.0, headers=config.OLLAMA_HEADERS) as client:
             resp = await client.get(f"{config.OLLAMA_BASE_URL}/api/ps")
         resp.raise_for_status()
         running = resp.json().get("models", [])
@@ -46,7 +46,7 @@ async def model_status(model: str) -> dict:
 
 
 async def warm_model(model: str) -> None:
-    async with httpx.AsyncClient(timeout=120.0) as client:
+    async with httpx.AsyncClient(timeout=120.0, headers=config.OLLAMA_HEADERS) as client:
         resp = await client.post(
             f"{config.OLLAMA_BASE_URL}/api/generate",
             json={"model": model, "prompt": "", "keep_alive": "10m"},
@@ -59,7 +59,7 @@ async def summarize_document(text: str, model: str = "") -> str:
     sample = text[:6000]
     m = model or config.ANALYSIS_MODEL
     try:
-        async with httpx.AsyncClient(timeout=120.0) as client:
+        async with httpx.AsyncClient(timeout=120.0, headers=config.OLLAMA_HEADERS) as client:
             resp = await client.post(
                 f"{config.OLLAMA_BASE_URL}/api/chat",
                 json={
