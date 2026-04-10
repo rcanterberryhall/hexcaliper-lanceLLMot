@@ -2422,9 +2422,9 @@ tr.wb-editing td { opacity: 0.5; }
   flex-shrink: 0;
   transition: background .3s;
 }
-.merllm-dot.day          { background: #3fb950; }
-.merllm-dot.night        { background: #a78bfa; }
-.merllm-dot.transitioning{ background: #d29922; }
+.merllm-dot.healthy      { background: #3fb950; }
+.merllm-dot.degraded     { background: #d29922; }
+.merllm-dot.faulted      { background: #f85149; }
 .merllm-dot.unknown      { background: #555; }
 
 @media (max-width: 768px) { .merllm-indicator { display: none; } }

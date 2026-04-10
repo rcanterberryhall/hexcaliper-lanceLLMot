@@ -72,7 +72,18 @@ async def merllm_status():
             r = await client.get(f"{config.MERLLM_URL}/api/merllm/status")
             return r.json()
     except Exception as exc:
-        return {"ok": False, "error": str(exc), "mode": "unknown"}
+        return {"ok": False, "error": str(exc), "routing": "unknown"}
+
+
+@router.get("/merllm/default-model")
+async def merllm_default_model():
+    """Proxy GET /api/merllm/default-model from merLLM."""
+    try:
+        async with httpx.AsyncClient(timeout=3) as client:
+            r = await client.get(f"{config.MERLLM_URL}/api/merllm/default-model")
+            return r.json()
+    except Exception as exc:
+        return {"model": None, "error": str(exc)}
 
 
 @router.post("/batch/submit")

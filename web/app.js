@@ -212,14 +212,14 @@ function addEscalateBtn(inner, convId, queryText, docIds, hasClientDocs) {
 
 /**
  * Appends a "Deep Analysis →" button to an AI message, submitting the
- * exchange to merLLM's batch API for extended-context night-mode processing.
+ * exchange to merLLM's batch API for low-priority background processing.
  * Polls for completion and renders the result as a new message.
  */
 function addDeepAnalysisBtn(inner, bubble, convId, queryText) {
   const btn = document.createElement('button');
   btn.className = 'deep-btn';
   btn.textContent = 'Deep Analysis →';
-  btn.title = 'Submit for extended-context analysis in merLLM night mode';
+  btn.title = 'Submit for deep analysis via merLLM batch queue';
   btn.addEventListener('click', async () => {
     if (btn.disabled) return;
     btn.disabled = true;
@@ -243,7 +243,7 @@ function addDeepAnalysisBtn(inner, bubble, convId, queryText) {
       if (!res.ok) throw new Error(((await res.json().catch(() => ({}))).detail) || res.status);
       const { id } = await res.json();
       btn.textContent = '⏳ Queued';
-      setStatus('Deep analysis queued — will complete in night mode.', 'info');
+      setStatus('Deep analysis queued — will run when a GPU slot is available.', 'info');
       _pollDeepAnalysis(id, btn);
     } catch (e) {
       btn.disabled = false;
@@ -1262,11 +1262,14 @@ async function pollMerllm() {
     const res = await fetch('/api/merllm/status');
     if (!res.ok) throw new Error(res.status);
     const d = await res.json();
-    const mode = d.mode || 'unknown';
-    dot.className = 'merllm-dot ' + mode;
+    const gpus = d.gpus || {};
+    const allHealthy = Object.values(gpus).every(g => g.health === 'healthy');
+    const anyFaulted = Object.values(gpus).some(g => g.health === 'faulted');
+    const health = allHealthy ? 'healthy' : anyFaulted ? 'faulted' : 'degraded';
+    dot.className = 'merllm-dot ' + health;
     const queue = d.queue?.total ?? 0;
     label.textContent = 'merLLM' + (queue > 0 ? ` (${queue})` : '');
-    label.title = `Mode: ${mode}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+    label.title = `Routing: ${d.routing || 'round_robin'}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
     if (d.warnings?.length) {
       dot.style.boxShadow = '0 0 0 2px rgba(210,153,34,.4)';
     } else {
@@ -1402,6 +1405,26 @@ async function fetchModels() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: analysisSel.value }),
       }).catch(() => {});
+    }
+    // Prepend "merLLM default" option asynchronously (don't block model list)
+    _prependMerllmDefault(models);
+  } catch (_) {}
+}
+
+async function _prependMerllmDefault(existingModels) {
+  try {
+    const res = await fetch('/api/merllm/default-model');
+    if (!res.ok) return;
+    const d = await res.json();
+    if (!d.model) return;
+    for (const sel of [modelSel, analysisSel]) {
+      // Don't add if already present as a "merLLM default" option
+      if (sel.querySelector('option[data-merllm-default]')) continue;
+      const opt = document.createElement('option');
+      opt.value = d.model;
+      opt.textContent = `merLLM default (${d.model})`;
+      opt.dataset.merllmDefault = '1';
+      sel.insertBefore(opt, sel.firstChild);
     }
   } catch (_) {}
 }
