@@ -11,6 +11,7 @@ import logging
 import pypdf
 import docx as python_docx
 import openpyxl
+from pdfminer.high_level import extract_text as pdfminer_extract
 
 log = logging.getLogger(__name__)
 
@@ -28,12 +29,22 @@ def parse_file(filename: str, data: bytes) -> str:
     if ext == "pdf":
         try:
             reader = pypdf.PdfReader(io.BytesIO(data))
-            return "\n\n".join(
+            text = "\n\n".join(
                 page.extract_text() or "" for page in reader.pages
             ).strip()
+            if text:
+                return text
         except Exception as exc:
-            log.warning("PDF parse failed: %s", exc)
-            return ""
+            log.warning("PDF parse failed (pypdf): %s", exc)
+        # Fallback: pdfminer handles malformed PDFs more gracefully
+        try:
+            text = pdfminer_extract(io.BytesIO(data)).strip()
+            if text:
+                log.info("PDF parsed via pdfminer fallback")
+                return text
+        except Exception as exc:
+            log.warning("PDF parse failed (pdfminer): %s", exc)
+        return ""
 
     if ext == "docx":
         try:
