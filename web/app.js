@@ -40,6 +40,30 @@ let abortController = null;
 let uploadInProgress = false;
 let gpuFastInterval = null;
 
+// ── Helpers ────────────────────────────────────────────────────
+
+/**
+ * HTML-escape a value before interpolating it into an innerHTML template.
+ *
+ * Several innerHTML templates below (scope badge, sources block) interpolate
+ * server-provided strings like document names, chunk text, and concept
+ * labels. Those can contain angle brackets, ampersands, or quotes that would
+ * otherwise break the DOM or introduce XSS — so every interpolation goes
+ * through ``esc()``. Null/undefined are coerced to an empty string so
+ * callers don't need to pre-check.
+ *
+ * @param {*} value - The value to escape.
+ * @return {string} The HTML-escaped string.
+ */
+function esc(value) {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
 // ── Scope badge ────────────────────────────────────────────────
 
 /**
