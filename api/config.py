@@ -20,6 +20,12 @@ OLLAMA_HEADERS  = {"X-Source": "lancellmot", "X-Priority": "chat"}
 # INTERACTIVE_QUEUE_TIMEOUT. This prevents silent graph-edge loss when
 # many chunks are ingested at once.
 OLLAMA_EXTRACTOR_HEADERS = {"X-Source": "lancellmot", "X-Priority": "background"}
+# Headers for embedding requests. Source-tag only — no X-Priority because
+# merLLM auto-classifies every /api/embeddings call into the dedicated
+# ``embeddings`` bucket regardless of header (merLLM#38). Sending an
+# X-Priority value here would be silently overridden, so we omit it to
+# keep the wire-level traffic honest about what we're actually choosing.
+EMBED_HEADERS = {"X-Source": "lancellmot"}
 MERLLM_URL      = _get("MERLLM_URL",      "http://host.docker.internal:11400")
 DEFAULT_MODEL   = _get("DEFAULT_MODEL", "qwen3:32b")
 ANALYSIS_MODEL  = _get("ANALYSIS_MODEL", "") or DEFAULT_MODEL

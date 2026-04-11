@@ -97,24 +97,27 @@ def chunk_text(text: str) -> list[str]:
 
 # ── Embedding ──────────────────────────────────────────────────
 
-async def embed(text: str, headers: dict | None = None) -> list[float]:
+async def embed(text: str) -> list[float]:
     """
     Generate a vector embedding for *text* using the Ollama embeddings API.
 
+    Routing: merLLM auto-classifies every ``/api/embeddings`` call into its
+    dedicated ``embeddings`` priority bucket regardless of any ``X-Priority``
+    header (merLLM#38). LanceLLMot's only responsibility is to tag the
+    request with ``X-Source: lancellmot`` so the merLLM dashboard can
+    attribute queue entries back to this app — that's all
+    :data:`config.EMBED_HEADERS` carries. Callers do not pick a priority
+    here and the function takes no header argument by design.
+
     :param text: The text to embed.
     :type text: str
-    :param headers: Optional header dict to send with the request. Defaults to
-        :data:`config.OLLAMA_HEADERS` (``X-Priority: chat``) for user-facing
-        query callers. Bulk-ingest callers must pass
-        :data:`config.OLLAMA_EXTRACTOR_HEADERS` so embedding traffic lands in
-        merLLM's ``background`` bucket and does not preempt real chats.
     :return: A list of floats representing the embedding vector.
     :rtype: list[float]
     :raises httpx.HTTPStatusError: If the Ollama API returns a non-2xx status.
     """
     async with httpx.AsyncClient(
         timeout=120.0,
-        headers=headers if headers is not None else config.OLLAMA_HEADERS,
+        headers=config.EMBED_HEADERS,
     ) as client:
         resp = await client.post(
             f"{config.OLLAMA_BASE_URL}/api/embeddings",
@@ -171,9 +174,11 @@ async def ingest(
 
     async def _bounded_embed(c: str) -> list[float]:
         async with sem:
-            # Bulk ingest is not latency-sensitive: route through the
-            # background bucket so a large upload cannot starve real chats.
-            return await embed(c, headers=config.OLLAMA_EXTRACTOR_HEADERS)
+            # Routing is decided by merLLM: every /api/embeddings call lands
+            # in the dedicated embeddings bucket regardless of any header
+            # we send (merLLM#38). The semaphore here exists only to bound
+            # client-side concurrency to EMBED_CONCURRENCY.
+            return await embed(c)
 
     embeddings = await asyncio.gather(*[_bounded_embed(c) for c in chunks])
     chunk_ids = [f"{doc_id}__{i}" for i in range(len(chunks))]

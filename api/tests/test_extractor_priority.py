@@ -1,14 +1,27 @@
 """
-test_extractor_priority.py — Verify extractor calls land in merLLM's
-``background`` bucket and user-facing calls land in the ``chat`` bucket.
+test_extractor_priority.py — Pin LanceLLMot's outbound header tagging.
 
 merLLM runs a 5-bucket priority queue (chat > embeddings > short >
-feedback > background, strict top-down drain). LanceLLMot's concept
-extractor is not latency-sensitive and must go out with
-``X-Priority: background`` so merLLM waits indefinitely for a GPU slot
-instead of timing out at INTERACTIVE_QUEUE_TIMEOUT and silently dropping
-graph edges. Every other LanceLLMot → merLLM call is user-facing and
-must land in the ``chat`` bucket.
+feedback > background, strict top-down drain). LanceLLMot owns the
+priority decision for two of those paths and merLLM owns the third:
+
+  * **Concept extractor** (chat-style call to /api/chat for entity
+    extraction during ingest) — must go out with ``X-Priority: background``
+    so merLLM waits indefinitely for a GPU slot instead of timing out at
+    INTERACTIVE_QUEUE_TIMEOUT and silently dropping graph edges.
+
+  * **User-facing chat / RAG / probes** — must go out with
+    ``X-Priority: chat`` so they land in the latency-sensitive bucket.
+
+  * **Embeddings** — routing is decided by merLLM, not LanceLLMot.
+    ``proxy_embeddings`` auto-classifies every /api/embeddings call into
+    the dedicated ``embeddings`` bucket regardless of header (merLLM#38).
+    LanceLLMot's only responsibility on the embed path is the
+    ``X-Source: lancellmot`` tag so the merLLM dashboard can attribute
+    queue entries — that's what ``test_embed_sends_lancellmot_source``
+    pins. The end-to-end routing contract is pinned by merLLM's own
+    ``test_embeddings_auto_classify_to_embeddings_bucket`` integration
+    test, not from this side.
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -52,34 +65,26 @@ async def test_extract_chunk_sends_background_priority_header():
     assert kwargs["headers"]["X-Priority"] == "background"
 
 
-@pytest.mark.asyncio
-async def test_embed_defaults_to_chat_priority():
-    """rag.embed() with no headers must use chat priority — query path."""
-    mock_resp = MagicMock()
-    mock_resp.raise_for_status = MagicMock()
-    mock_resp.json.return_value = {"embedding": [0.0]}
+def test_embed_headers_are_source_tag_only():
+    """config.EMBED_HEADERS must carry X-Source but no X-Priority.
 
-    mock_client = AsyncMock()
-    mock_client.__aenter__ = AsyncMock(return_value=mock_client)
-    mock_client.__aexit__ = AsyncMock(return_value=False)
-    mock_client.post = AsyncMock(return_value=mock_resp)
-
-    with patch("rag.httpx.AsyncClient", return_value=mock_client) as mock_cls:
-        await rag.embed("query text")
-
-    _, kwargs = mock_cls.call_args
-    assert kwargs["headers"] is config.OLLAMA_HEADERS
-    assert kwargs["headers"]["X-Priority"] == "chat"
+    Embedding routing is decided by merLLM (#38). Sending an X-Priority
+    here would be silently overridden — so we omit it to keep wire-level
+    traffic honest about what we're actually choosing. The X-Source tag
+    must remain so the merLLM dashboard can attribute queue entries.
+    """
+    assert config.EMBED_HEADERS["X-Source"] == "lancellmot"
+    assert "X-Priority" not in config.EMBED_HEADERS
 
 
 @pytest.mark.asyncio
-async def test_embed_accepts_background_headers_for_ingest():
-    """rag.embed(headers=OLLAMA_EXTRACTOR_HEADERS) must use background priority.
+async def test_embed_sends_lancellmot_source():
+    """rag.embed() must build its httpx client with EMBED_HEADERS.
 
-    Regression: prior to 2026-04-11, rag.ingest() called rag.embed() with no
-    headers argument, so bulk-ingest embedding traffic landed in merLLM's
-    chat bucket and preempted real user chats during doc indexing. The
-    extractor calls were already background; the embeddings were not.
+    Pins the source-tag contract from lancellmot's side. The end-to-end
+    routing contract (that the request lands in the embeddings bucket)
+    is pinned by merLLM's own integration test
+    test_embeddings_auto_classify_to_embeddings_bucket.
     """
     mock_resp = MagicMock()
     mock_resp.raise_for_status = MagicMock()
@@ -91,47 +96,8 @@ async def test_embed_accepts_background_headers_for_ingest():
     mock_client.post = AsyncMock(return_value=mock_resp)
 
     with patch("rag.httpx.AsyncClient", return_value=mock_client) as mock_cls:
-        await rag.embed("chunk text", headers=config.OLLAMA_EXTRACTOR_HEADERS)
+        await rag.embed("any text")
 
     _, kwargs = mock_cls.call_args
-    assert kwargs["headers"] is config.OLLAMA_EXTRACTOR_HEADERS
-    assert kwargs["headers"]["X-Priority"] == "background"
-
-
-@pytest.mark.asyncio
-async def test_ingest_routes_embeddings_through_background_bucket():
-    """rag.ingest() must pass OLLAMA_EXTRACTOR_HEADERS to every embed() call."""
-    captured_headers = []
-
-    async def _fake_embed(text, headers=None):
-        captured_headers.append(headers)
-        return [0.0]
-
-    fake_col = MagicMock()
-    fake_col.add = MagicMock()
-
-    with patch("rag.embed", side_effect=_fake_embed), \
-         patch("rag.get_collection", return_value=fake_col), \
-         patch("rag.graph") as mock_graph, \
-         patch("rag.db"), \
-         patch("rag.extractor") as mock_extractor:
-        mock_graph.parse_and_index_chunk_references = MagicMock()
-        mock_graph.parse_and_index_references = MagicMock()
-        mock_graph.index_document = MagicMock()
-        mock_graph.index_chunk = MagicMock()
-        mock_extractor.extract_chunk = AsyncMock(
-            return_value=extractor.ExtractionResult()
-        )
-
-        await rag.ingest(
-            doc_id="doc-1",
-            user_email="user@example.com",
-            text="x" * 2500,
-            skip_concepts=True,
-        )
-
-    assert captured_headers, "ingest() should have called embed() at least once"
-    for h in captured_headers:
-        assert h is config.OLLAMA_EXTRACTOR_HEADERS, (
-            f"ingest() embed call used wrong headers: {h}"
-        )
+    assert kwargs["headers"] is config.EMBED_HEADERS
+    assert kwargs["headers"]["X-Source"] == "lancellmot"
