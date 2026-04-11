@@ -10,12 +10,16 @@ def _get(key: str, default: str = "") -> str:
 
 
 OLLAMA_BASE_URL = _get("OLLAMA_BASE_URL", "http://host.docker.internal:11400")
-OLLAMA_HEADERS  = {"X-Source": "lancellmot"}
+# Default headers for every LanceLLMot → merLLM call. Everything that uses
+# this dict is user-facing: RAG, chat streaming, /api/ps probes — the user
+# is actively waiting, so it lands in merLLM's ``chat`` bucket (bucket 1).
+OLLAMA_HEADERS  = {"X-Source": "lancellmot", "X-Priority": "chat"}
 # Headers for the concept extractor. Extraction during bulk ingest is not
-# latency-sensitive, so it runs at batch priority: merLLM waits indefinitely
-# for a GPU slot instead of timing out at INTERACTIVE_QUEUE_TIMEOUT. This
-# prevents silent graph-edge loss when many chunks are ingested at once.
-OLLAMA_EXTRACTOR_HEADERS = {"X-Source": "lancellmot", "X-Priority": "batch"}
+# latency-sensitive, so it runs in the ``background`` bucket (bucket 5):
+# merLLM waits indefinitely for a GPU slot instead of timing out at
+# INTERACTIVE_QUEUE_TIMEOUT. This prevents silent graph-edge loss when
+# many chunks are ingested at once.
+OLLAMA_EXTRACTOR_HEADERS = {"X-Source": "lancellmot", "X-Priority": "background"}
 MERLLM_URL      = _get("MERLLM_URL",      "http://host.docker.internal:11400")
 DEFAULT_MODEL   = _get("DEFAULT_MODEL", "qwen3:32b")
 ANALYSIS_MODEL  = _get("ANALYSIS_MODEL", "") or DEFAULT_MODEL
