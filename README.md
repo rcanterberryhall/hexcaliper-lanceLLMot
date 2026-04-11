@@ -492,10 +492,16 @@ The `POST /chat` endpoint streams Server-Sent Events. Beyond the standard token 
 When merLLM queues the request due to GPU contention, a `queue_status` event may precede all others:
 
 ```json
-{"type": "queue_status", "position": 2, "reason": "transitioning to day mode", "estimated_wait_seconds": 35}
+{"type": "queue_status", "reason": "all GPU slots occupied — queued for dispatch", "estimated_wait_seconds": 30}
 ```
 
-The UI displays this as a waiting indicator with the reason and estimated time.
+If the wait exceeds merLLM's `QUEUE_HEARTBEAT_INTERVAL_SECONDS`, periodic keepalive lines follow so the read-gap timer on `requests.post(timeout=60, stream=True)` does not trip during a long background-bucket drain:
+
+```json
+{"type": "queue_status", "waiting": true, "elapsed_seconds": 20}
+```
+
+The UI displays the first event as a waiting indicator with the reason and the heartbeats as a growing wait timer.
 
 ---
 
