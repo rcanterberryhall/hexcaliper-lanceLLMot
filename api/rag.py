@@ -237,6 +237,77 @@ async def ingest(
     return len(chunks)
 
 
+async def index_concepts_for_doc(
+    doc_id: str,
+    text: str,
+    doc_type: str = "",
+    scope_type: str = "global",
+    scope_id: Optional[str] = None,
+) -> int:
+    """
+    Run LLM concept/entity extraction for every chunk of a document and index
+    the results as graph hub nodes.
+
+    This is the same concept-extraction loop that ``ingest()`` runs inline, but
+    extracted as a standalone coroutine so callers can schedule it as a
+    background task after returning a quick ``POST /documents`` response. The
+    text is re-chunked deterministically (same ``chunk_text`` output and same
+    ``{doc_id}__{i}`` chunk IDs) so it matches what the embedding pass stored
+    in ChromaDB — no need to thread chunks through the caller.
+
+    Each chunk's extraction is independently fault-tolerant: a per-chunk
+    failure logs a warning and continues. Returns the number of chunks that
+    produced at least one concept or entity.
+    """
+    chunks = chunk_text(text)
+    if not chunks:
+        return 0
+    chunk_ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
+
+    # Same scope hierarchy as ingest() — see rag.ingest for the rationale.
+    vocab_scope_types: list[str] = ["global"]
+    vocab_scope_ids: list = [None]
+    if scope_type == "client" and scope_id:
+        vocab_scope_types.append("client")
+        vocab_scope_ids.append(scope_id)
+    elif scope_type == "project" and scope_id:
+        vocab_scope_types.append("project")
+        vocab_scope_ids.append(scope_id)
+        project_row = db.get_project(scope_id)
+        if project_row and project_row.get("client_id"):
+            vocab_scope_types.append("client")
+            vocab_scope_ids.append(project_row["client_id"])
+    elif scope_type == "session" and scope_id:
+        vocab_scope_types.append("session")
+        vocab_scope_ids.append(scope_id)
+
+    with db.lock:
+        learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+
+    indexed = 0
+    for i, chunk in enumerate(chunks):
+        try:
+            result = await extractor.extract_chunk(
+                chunk, doc_type=doc_type, learned_vocab=learned_vocab,
+            )
+        except Exception as exc:
+            log.warning("index_concepts_for_doc: chunk %d of %s failed: %s",
+                        i, doc_id, exc)
+            continue
+        if not result.is_empty():
+            graph.index_chunk_concepts(
+                chunk_ids[i],
+                concepts=result.concepts,
+                entities=result.entities,
+                doc_role=result.doc_role,
+                key_assertion=result.key_assertion,
+                scope_type=scope_type,
+                scope_id=scope_id,
+            )
+            indexed += 1
+    return indexed
+
+
 # ── Migration ──────────────────────────────────────────────────
 
 def migrate_legacy_scopes() -> None:

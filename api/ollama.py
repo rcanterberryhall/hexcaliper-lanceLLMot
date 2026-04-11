@@ -69,6 +69,8 @@ async def summarize_document(text: str, model: str = "") -> str:
                         "Summarize this document in 2-3 sentences, "
                         "focusing on its main topic and purpose:\n\n" + sample
                     )}],
+                    "think":   False,
+                    "options": {"num_predict": 1024},
                 },
             )
         resp.raise_for_status()

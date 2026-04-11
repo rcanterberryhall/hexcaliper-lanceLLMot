@@ -286,7 +286,13 @@ async def extract_chunk(
         async with httpx.AsyncClient(timeout=EXTRACT_TIMEOUT, headers=config.OLLAMA_EXTRACTOR_HEADERS) as client:
             resp = await client.post(
                 f"{config.OLLAMA_BASE_URL}/api/chat",
-                json={"model": m, "stream": False, "messages": messages},
+                json={
+                    "model":    m,
+                    "stream":   False,
+                    "messages": messages,
+                    "think":    False,
+                    "options":  {"num_predict": 384},
+                },
             )
         resp.raise_for_status()
         content = resp.json()["message"]["content"]

@@ -2,12 +2,14 @@
 routers/documents.py — Document upload, listing, and deletion.
 """
 import asyncio
+import json
+import logging
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
-from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -20,6 +22,8 @@ import ollama
 import parser
 import rag
 from models import DOC_TYPES
+
+log = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -95,9 +99,71 @@ async def list_documents(
     ]
 
 
+async def _finalize_document(
+    doc_id:     str,
+    text:       str,
+    doc_type:   str,
+    scope_type: str,
+    scope_id:   Optional[str],
+) -> None:
+    """
+    Background finalization for a freshly uploaded document.
+
+    This runs *after* ``POST /documents`` has returned 200, so the
+    request-path stays fast (parse + embed + DB insert only, typically under
+    5 s). It does the slow, LLM-bound work that used to block the response:
+
+      1. Summarize the document (``summarize_document``) and run the local
+         copyright notice extractor — gathered concurrently.
+      2. Write ``summary`` and ``copyright_notices`` back into the documents
+         row via ``db.update_document``.
+      3. Run per-chunk concept/entity extraction via
+         ``rag.index_concepts_for_doc`` and index the results as graph hub
+         nodes.
+
+    Each stage is independently fault-tolerant: a failure in one stage logs a
+    warning and the others continue, because a document that's embedded and
+    searchable is still useful even if its summary or concept graph couldn't
+    be produced. The ``_active_uploads`` dashboard entry is popped in the
+    ``finally`` block so the user sees the document leave the
+    "still processing" list as soon as finalization exits (success or not).
+    """
+    try:
+        try:
+            summary, notices = await asyncio.gather(
+                ollama.summarize_document(text),
+                asyncio.to_thread(copyright_extract.extract, text),
+            )
+        except Exception as exc:
+            log.warning("finalize_document %s: summarize/copyright failed: %s",
+                        doc_id, exc)
+            summary, notices = "", []
+
+        try:
+            with db.lock:
+                db.update_document(doc_id, {
+                    "summary":           summary,
+                    "copyright_notices": json.dumps(notices or []),
+                })
+        except Exception as exc:
+            log.warning("finalize_document %s: db update failed: %s", doc_id, exc)
+
+        try:
+            await rag.index_concepts_for_doc(
+                doc_id, text, doc_type=doc_type,
+                scope_type=scope_type, scope_id=scope_id,
+            )
+        except Exception as exc:
+            log.warning("finalize_document %s: concept extraction failed: %s",
+                        doc_id, exc)
+    finally:
+        _active_uploads.pop(doc_id, None)
+
+
 @router.post("/documents")
 async def upload_document(
     request:         Request,
+    background:      BackgroundTasks,
     file:            UploadFile = File(...),
     conversation_id: Optional[str] = None,
     project_id:      Optional[str] = None,
@@ -118,6 +184,13 @@ async def upload_document(
     upload = {"filename": filename, "started_at": time.time(), "stage": "parsing"}
     _active_uploads[doc_id] = upload
 
+    # Parse + embed happen in the request path. Summarize + copyright + concept
+    # extraction are deferred to ``_finalize_document`` so the POST returns as
+    # soon as the document is indexed for retrieval; previously the full
+    # pipeline ran inline and pushed the response past the 120 s client
+    # timeout on a cold qwen3:32b extractor call. ``_active_uploads`` stays
+    # populated through the background stage so the dashboard still shows the
+    # document as "in progress".
     try:
         text = await asyncio.to_thread(parser.parse_file, filename, data)
         if not text:
@@ -140,28 +213,33 @@ async def upload_document(
             doc_id, user_email, text,
             scope_type=scope_type, scope_id=scope_id,
             title=filename, uploaded_at=ts, doc_type=doc_type,
-            skip_concepts=defer_index,
+            skip_concepts=True,  # always deferred — _finalize_document owns the LLM stages
         )
-        if defer_index:
-            summary = ""
-            notices = []
-        else:
-            upload["stage"] = "summarizing"
-            summary, notices = await asyncio.gather(
-                ollama.summarize_document(text),
-                asyncio.to_thread(copyright_extract.extract, text),
-            )
-    finally:
+    except Exception:
         _active_uploads.pop(doc_id, None)
+        raise
 
     meta = {
         "id": doc_id, "user_email": user_email, "filename": filename,
         "size_bytes": len(data), "chunk_count": chunk_count, "created_at": ts,
         "scope_type": scope_type, "scope_id": scope_id, "doc_type": doc_type,
-        "summary": summary, "copyright_notices": notices, "classification": classification,
+        "summary": "", "copyright_notices": [], "classification": classification,
     }
     with db.lock:
         db.insert_document(meta)
+
+    if defer_index:
+        # Explicit opt-out — caller asked to skip concept+summary indexing
+        # entirely (used by reindex flows / batch imports that will run their
+        # own finalization later).
+        _active_uploads.pop(doc_id, None)
+    else:
+        upload["stage"] = "finalizing"
+        background.add_task(
+            _finalize_document,
+            doc_id, text, doc_type, scope_type, scope_id,
+        )
+
     return meta
 
 
