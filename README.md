@@ -82,7 +82,7 @@ Browser
         └── /api/* → FastAPI/uvicorn (:8000)
                        ├── Ollama              (:11434, host)
                        ├── ChromaDB            (./data/chroma)
-                       ├── SQLite              (./data/hexcaliper.db)
+                       ├── SQLite              (./data/lancellmot.db)
                        ├── Library files       (./data/library/)
                        ├── DuckDuckGo          (web search, no key)
                        ├── Manufacturer sites  (scraper, approval-gated)
@@ -192,7 +192,7 @@ All tunables are set via environment variables in `docker-compose.yml`:
 | `EXTRACT_MODEL` | _(same as ANALYSIS_MODEL)_ | Model used for graph/concept extraction; set to a smaller model for faster extraction at lower quality |
 | `MAX_INPUT_CHARS` | `20000` | Max characters per user message |
 | `REQUEST_TIMEOUT_SECONDS` | `120` | Ollama request timeout |
-| `DB_PATH` | `/app/data/hexcaliper.db` | SQLite database path |
+| `DB_PATH` | `/app/data/lancellmot.db` | SQLite database path |
 | `CHROMA_PATH` | `/app/data/chroma` | ChromaDB persistence path |
 | `LIBRARY_PATH` | `/app/data/library` | Technical document file store |
 
@@ -285,7 +285,7 @@ nginx-library:
 
 | Path | Contents |
 |------|----------|
-| `./data/hexcaliper.db` | All metadata: conversations, documents, library items, queues, connections |
+| `./data/lancellmot.db` | All metadata: conversations, documents, library items, queues, connections |
 | `./data/chroma/` | Vector embeddings (ChromaDB) — includes escalation cache collection |
 | `./data/library/` | Downloaded technical documents, laid out as `{manufacturer}/{product_id}/{filename}` |
 
@@ -298,26 +298,26 @@ rm -rf data/
 
 ### Database backup
 
-Back up `hexcaliper.db` while the container is running using the SQLite CLI's
+Back up `lancellmot.db` while the container is running using the SQLite CLI's
 online backup command (safe with WAL mode):
 
 ```bash
-sqlite3 data/hexcaliper.db ".backup 'backups/hexcaliper-$(date +%Y%m%d-%H%M%S).db'"
+sqlite3 data/lancellmot.db ".backup 'backups/lancellmot-$(date +%Y%m%d-%H%M%S).db'"
 ```
 
 **Scheduled backup via cron (run on the host):**
 
 ```bash
 # Back up every night at 02:30
-30 2 * * * sqlite3 /opt/hexcaliper/data/hexcaliper.db \
-  ".backup '/opt/hexcaliper/backups/hexcaliper-$(date +%Y%m%d-%H%M%S).db'" \
-  >> /var/log/hexcaliper-backup.log 2>&1
+30 2 * * * sqlite3 /opt/hexcaliper-lanceLLMot/data/lancellmot.db \
+  ".backup '/opt/hexcaliper-lanceLLMot/backups/lancellmot-$(date +%Y%m%d-%H%M%S).db'" \
+  >> /var/log/lancellmot-backup.log 2>&1
 ```
 
 Or with the helper script (if present):
 
 ```bash
-30 2 * * * /opt/hexcaliper/backup_db.sh >> /var/log/hexcaliper-backup.log 2>&1
+30 2 * * * /opt/hexcaliper-lanceLLMot/backup_db.sh >> /var/log/lancellmot-backup.log 2>&1
 ```
 
 ---
