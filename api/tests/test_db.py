@@ -245,3 +245,59 @@ def test_list_library_manufacturers(isolated_db):
     assert names == {"Beckhoff", "Siemens"}
     beckhoff = next(m for m in mfrs if m["manufacturer"] == "Beckhoff")
     assert beckhoff["doc_count"] == 2
+
+
+# ── concept_scope vocab ───────────────────────────────────────────────────────
+
+def test_list_concept_vocab_limit_ranks_by_frequency(isolated_db):
+    """limit=N returns the N concepts recorded in the most scopes, highest
+    first. Guards hexcaliper-lanceLLMot#30 — the extractor system prompt
+    relies on this ranking to keep the retained vocab relevant."""
+    import db
+    with db.lock:
+        # 'common' appears in 3 scopes, 'mid' in 2, 'rare' in 1.
+        db.record_concept_scope("common", "global", "")
+        db.record_concept_scope("common", "client", "c1")
+        db.record_concept_scope("common", "project", "p1")
+        db.record_concept_scope("mid",    "global", "")
+        db.record_concept_scope("mid",    "client", "c1")
+        db.record_concept_scope("rare",   "global", "")
+        top2 = db.list_concept_vocab(limit=2)
+    assert top2 == ["common", "mid"]
+
+
+def test_list_concept_vocab_unlimited_stays_alphabetical(isolated_db):
+    """No limit → alphabetical order (backward-compat with callers that
+    don't care about ranking)."""
+    import db
+    with db.lock:
+        db.record_concept_scope("zeta",  "global", "")
+        db.record_concept_scope("alpha", "global", "")
+        db.record_concept_scope("mu",    "global", "")
+        all_vocab = db.list_concept_vocab()
+    assert all_vocab == ["alpha", "mu", "zeta"]
+
+
+def test_list_concept_vocab_scope_filter_with_limit(isolated_db):
+    """Scope filter + limit: ranking is computed over the filtered rows,
+    not the whole table. Rows outside the filter must not inflate the
+    ranking of any concept."""
+    import db
+    with db.lock:
+        # Outside the (global, client/c1) scope — should be ignored despite
+        # high count. If the ranking leaked across the filter, 'other-only'
+        # would end up in the top-N.
+        db.record_concept_scope("other-only", "client", "other")
+        db.record_concept_scope("other-only", "project", "p-other")
+        db.record_concept_scope("other-only", "project", "p-other-2")
+
+        # In scope — 'top' appears in both filtered rows, 'solo' only in one.
+        db.record_concept_scope("top",  "global", "")
+        db.record_concept_scope("top",  "client", "c1")
+        db.record_concept_scope("solo", "global", "")
+        result = db.list_concept_vocab(
+            scope_types=["global", "client"], scope_ids=[None, "c1"], limit=5,
+        )
+    assert "other-only" not in result
+    assert result[0] == "top"
+    assert "solo" in result

@@ -230,7 +230,9 @@ async def ingest(
         vocab_scope_ids.append(scope_id)
 
     with db.lock:
-        learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+        learned_vocab = db.list_concept_vocab(
+            vocab_scope_types, vocab_scope_ids, limit=extractor.MAX_LEARNED_VOCAB,
+        )
 
     if not skip_concepts:
         # Extract concepts/entities per chunk and index as graph hub nodes.
@@ -301,7 +303,9 @@ async def index_concepts_for_doc(
         vocab_scope_ids.append(scope_id)
 
     with db.lock:
-        learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+        learned_vocab = db.list_concept_vocab(
+            vocab_scope_types, vocab_scope_ids, limit=extractor.MAX_LEARNED_VOCAB,
+        )
 
     # Route bulk extraction through merLLM's durable batch queue so a restart
     # mid-ingest (power outage, code redeploy) no longer silently loses graph

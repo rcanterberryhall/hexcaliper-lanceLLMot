@@ -794,6 +794,7 @@ def record_concept_scope(concept_label: str, scope_type: str, scope_id: str = ""
 def list_concept_vocab(
     scope_types: list[str] | None = None,
     scope_ids: list | None = None,
+    limit: int | None = None,
 ) -> list[str]:
     """
     Return learned concept labels visible in the given scope hierarchy.
@@ -804,15 +805,34 @@ def list_concept_vocab(
     project-level extractions are seeded with global + client + project vocab
     rather than the entire cross-tenant vocabulary.
 
+    When *limit* is set, results are ranked by document-frequency
+    (count of distinct scope rows per concept, highest first) and truncated.
+    This keeps the extractor's system prompt bounded as the learned vocab
+    grows past the model's context window (hexcaliper-lanceLLMot#30).
+    Without a limit the alphabetical order is preserved for backward
+    compatibility.
+
     :param scope_types: List of scope type strings to include.
     :param scope_ids:   Parallel list of scope IDs (None or "" means any ID for
                         that scope type, i.e. global-scope concepts).
-    :return: Sorted list of distinct concept label strings.
+    :param limit:       If set, return at most this many labels, ranked by
+                        frequency.
+    :return: List of distinct concept label strings.
     """
+    ranked = limit is not None and limit > 0
+    if ranked:
+        order_by = "ORDER BY COUNT(*) DESC, concept_label ASC"
+        select   = "SELECT concept_label FROM concept_scope"
+        group_by = "GROUP BY concept_label"
+        tail     = f"{order_by} LIMIT {int(limit)}"
+    else:
+        select   = "SELECT DISTINCT concept_label FROM concept_scope"
+        group_by = ""
+        tail     = "ORDER BY concept_label"
+
     if not scope_types:
-        rows = conn().execute(
-            "SELECT DISTINCT concept_label FROM concept_scope ORDER BY concept_label"
-        ).fetchall()
+        sql = f"{select} {group_by} {tail}".strip()
+        rows = conn().execute(sql).fetchall()
         return [r[0] for r in rows]
 
     if scope_ids is None:
@@ -829,10 +849,8 @@ def list_concept_vocab(
             params.extend([st, si])
 
     where = " OR ".join(clauses) if clauses else "1=0"
-    rows = conn().execute(
-        f"SELECT DISTINCT concept_label FROM concept_scope WHERE {where} ORDER BY concept_label",
-        params,
-    ).fetchall()
+    sql = f"{select} WHERE {where} {group_by} {tail}".strip()
+    rows = conn().execute(sql, params).fetchall()
     return [r[0] for r in rows]
 
 

@@ -58,6 +58,17 @@ BATCH_POLL_INTERVAL  = float(config._get("EXTRACT_BATCH_POLL_INTERVAL", "3"))
 # letting a runaway poll leak forever.
 BATCH_POLL_MAX_SECONDS = float(config._get("EXTRACT_BATCH_POLL_MAX_SECONDS", "900"))
 
+# Cap on *learned* vocab entries fed into the system prompt on top of the
+# seeded CONCEPT_VOCAB. The learned set grows unbounded as documents are
+# ingested; without a cap the serialized vocab block eventually exceeds
+# num_ctx, gets silently left-truncated by Ollama, and qwen3 emits nothing
+# (hexcaliper-lanceLLMot#30). 200 keeps the full prompt well under 8k tokens
+# even with the seeded vocab and chunk text, while retaining enough learned
+# terms to steer concept reuse. Callers should pair this with the ranked
+# `limit` on db.list_concept_vocab so the 200 retained are the most
+# frequently used in the active scope.
+MAX_LEARNED_VOCAB = int(config._get("EXTRACT_MAX_LEARNED_VOCAB", "200"))
+
 
 def _extract_model() -> str:
     return config.EXTRACT_MODEL
@@ -185,8 +196,12 @@ def _build_system_prompt(extra_vocab: list[str] | None = None) -> str:
     """
     merged = list(CONCEPT_VOCAB)
     if extra_vocab:
+        # Defensive cap: callers are expected to pass a pre-ranked, already-
+        # limited list (db.list_concept_vocab(..., limit=MAX_LEARNED_VOCAB)),
+        # but we clip here too so a careless caller can't blow past num_ctx.
+        capped   = extra_vocab[:MAX_LEARNED_VOCAB]
         existing = set(merged)
-        for c in extra_vocab:
+        for c in capped:
             if c not in existing:
                 merged.append(c)
                 existing.add(c)

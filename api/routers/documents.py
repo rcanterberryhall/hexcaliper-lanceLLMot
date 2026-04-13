@@ -515,7 +515,9 @@ async def reindex_documents(
             vocab_scope_ids.append(scope_id)
 
         with db.lock:
-            learned_vocab = db.list_concept_vocab(vocab_scope_types, vocab_scope_ids)
+            learned_vocab = db.list_concept_vocab(
+                vocab_scope_types, vocab_scope_ids, limit=extractor.MAX_LEARNED_VOCAB,
+            )
 
         # Collect all chunks for the doc, then route the extraction through
         # merLLM's durable batch queue (hexcaliper#29). A restart mid-reindex
