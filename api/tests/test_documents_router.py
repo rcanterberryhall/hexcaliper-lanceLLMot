@@ -166,3 +166,45 @@ def test_delete_document(app_client):
 def test_delete_nonexistent_returns_404(app_client):
     r = app_client.delete("/documents/ghost-id")
     assert r.status_code == 404
+
+
+def test_delete_removes_upload_bytes(app_client):
+    import os, config
+    doc = upload(app_client, "to_delete.pdf", content=b"payload").json()
+    upload_path = os.path.join(config.UPLOADS_PATH, doc["id"])
+    assert os.path.exists(upload_path)
+    app_client.delete(f"/documents/{doc['id']}")
+    assert not os.path.exists(upload_path)
+
+
+# ── GET /documents/{id}/download ──────────────────────────────────────────────
+
+def test_download_document_returns_original_bytes(app_client):
+    content = b"\x89PNG\r\n\x1a\n-original-bytes-"
+    doc = upload(app_client, "diagram.png", content=content).json()
+    r = app_client.get(f"/documents/{doc['id']}/download")
+    assert r.status_code == 200
+    assert r.content == content
+    # Filename is surfaced via Content-Disposition so the browser saves the original name.
+    assert "diagram.png" in r.headers.get("content-disposition", "")
+
+
+def test_download_document_sets_media_type_from_filename(app_client):
+    doc = upload(app_client, "spec.pdf", content=b"%PDF-1.4 fake").json()
+    r = app_client.get(f"/documents/{doc['id']}/download")
+    assert r.status_code == 200
+    assert r.headers.get("content-type", "").startswith("application/pdf")
+
+
+def test_download_document_404_when_doc_missing(app_client):
+    r = app_client.get("/documents/does-not-exist/download")
+    assert r.status_code == 404
+
+
+def test_download_document_404_when_bytes_missing(app_client):
+    """Legacy docs uploaded before the spool existed have no stored bytes."""
+    import os, config
+    doc = upload(app_client, "legacy.pdf", content=b"legacy").json()
+    os.unlink(os.path.join(config.UPLOADS_PATH, doc["id"]))
+    r = app_client.get(f"/documents/{doc['id']}/download")
+    assert r.status_code == 404

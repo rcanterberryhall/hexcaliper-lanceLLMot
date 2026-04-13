@@ -95,6 +95,11 @@ async def site_config(request: Request):
 async def startup():
     db.conn()
 
+    # Ensure the upload spool exists — documents are persisted here so the
+    # Workbench download button can return the original source file.
+    import os as _os
+    _os.makedirs(config.UPLOADS_PATH, exist_ok=True)
+
     # Startup diagnostics: database integrity
     try:
         integrity = db.conn().execute("PRAGMA integrity_check").fetchone()

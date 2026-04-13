@@ -42,6 +42,9 @@ DB_PATH         = _get("DB_PATH", "/app/data/lancellmot.db")
 CHROMA_PATH     = _get("CHROMA_PATH", "/app/data/chroma")
 TINYDB_LEGACY   = _get("TINYDB_LEGACY_PATH", "/app/data/db.json")
 LIBRARY_PATH    = _get("LIBRARY_PATH", "/app/data/library")
+# Original upload bytes are persisted here (one file per doc, named by doc_id)
+# so the Workbench's per-row download button can return the source document.
+UPLOADS_PATH    = _get("UPLOADS_PATH", "/app/data/uploads")
 
 # ── Cloud escalation ──────────────────────────────────────────────────────────
 # ESCALATION_PROVIDER: "anthropic" | "openai"

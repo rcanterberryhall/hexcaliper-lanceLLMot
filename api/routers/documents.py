@@ -4,13 +4,15 @@ routers/documents.py — Document upload, listing, and deletion.
 import asyncio
 import json
 import logging
+import mimetypes
+import os
 import time
 import uuid
 from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, BackgroundTasks, File, HTTPException, Request, UploadFile
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel
 
 import config
@@ -47,6 +49,12 @@ def active_upload_snapshot() -> list[dict]:
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _write_bytes(path: str, data: bytes) -> None:
+    """Write bytes to disk. Runs in a thread via asyncio.to_thread."""
+    with open(path, "wb") as f:
+        f.write(data)
 
 
 def _user(request: Request) -> str:
@@ -195,6 +203,12 @@ async def upload_document(
         text = await asyncio.to_thread(parser.parse_file, filename, data)
         if not text:
             raise HTTPException(status_code=422, detail="Could not extract text from file.")
+
+        # Persist the original bytes so the Workbench download button can
+        # return the source file later. One file per doc, named by doc_id —
+        # filename is looked up from the DB when serving.
+        upload_path = os.path.join(config.UPLOADS_PATH, doc_id)
+        await asyncio.to_thread(_write_bytes, upload_path, data)
 
         if doc_type not in DOC_TYPES:
             doc_type = "misc"
@@ -393,6 +407,39 @@ async def attach_document_to_conversation(
     return meta
 
 
+@router.get("/documents/{doc_id}/download")
+async def download_document(doc_id: str, request: Request):
+    """
+    Stream the original uploaded bytes back to the user.
+
+    Returns 404 for unknown doc_ids and for legacy docs uploaded before the
+    spool existed (their bytes were never persisted). The frontend surfaces
+    this as a "download not available" status message.
+    """
+    user_email = _user(request)
+    with db.lock:
+        doc = db.get_document(doc_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found.")
+    if doc["user_email"] != user_email:
+        raise HTTPException(status_code=403, detail="Access denied.")
+
+    upload_path = os.path.join(config.UPLOADS_PATH, doc_id)
+    if not os.path.exists(upload_path):
+        raise HTTPException(
+            status_code=404,
+            detail="Original bytes unavailable — document predates the download spool.",
+        )
+
+    filename = doc.get("filename") or f"{doc_id}.bin"
+    media_type, _ = mimetypes.guess_type(filename)
+    return FileResponse(
+        upload_path,
+        media_type=media_type or "application/octet-stream",
+        filename=filename,
+    )
+
+
 @router.delete("/documents/{doc_id}")
 async def delete_document(doc_id: str, request: Request):
     user_email = _user(request)
@@ -404,6 +451,16 @@ async def delete_document(doc_id: str, request: Request):
             raise HTTPException(status_code=403, detail="Access denied.")
         db.delete_document(doc_id)
     rag.delete_chunks(doc_id)
+    # Best-effort cleanup of the stored original. Missing file is fine —
+    # legacy docs never had one, and a partial upload may have failed before
+    # the spool write.
+    upload_path = os.path.join(config.UPLOADS_PATH, doc_id)
+    try:
+        os.unlink(upload_path)
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        log.warning("delete_document: could not unlink %s: %s", upload_path, exc)
     return Response(status_code=204)
 
 

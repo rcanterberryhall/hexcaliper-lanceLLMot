@@ -93,6 +93,10 @@ def app_client(isolated_db, tmp_path, monkeypatch, mock_externals):
 
     monkeypatch.setattr(config, "LIBRARY_PATH", str(tmp_path / "library"))
 
+    uploads_dir = tmp_path / "uploads"
+    uploads_dir.mkdir(exist_ok=True)
+    monkeypatch.setattr(config, "UPLOADS_PATH", str(uploads_dir))
+
     # Import app after all patches are in place.
     from app import app
 
