@@ -104,16 +104,17 @@ async def chat(req: ChatRequest, request: Request):
         log.exception("Web fetch failed, proceeding without URL context")
         url_context = {}
 
-    chunk_scores: list[float] = []
+    chunk_scores:  list[float] = []
+    chunk_anchors: list[str]   = []
     try:
-        doc_chunks, doc_ids, chunk_ids, chunk_scores = await rag.search(
+        doc_chunks, doc_ids, chunk_ids, chunk_scores, chunk_anchors = await rag.search(
             user_email, req.message,
             scope_types=scope_types, scope_ids=scope_ids,
         )
     except Exception as exc:
         log.exception("RAG vector search failed, proceeding without document context")
         rag_errors.append(f"vector search: {exc}")
-        doc_chunks, doc_ids, chunk_ids = [], [], []
+        doc_chunks, doc_ids, chunk_ids, chunk_anchors = [], [], [], []
 
     with db.lock:
         all_docs = db.list_documents_for_scope(user_email, scope_types, scope_ids)
@@ -145,7 +146,10 @@ async def chat(req: ChatRequest, request: Request):
                     [c for c in collected_ctx if c.get("chunk_id","") in chunk_text_map],
                     doc_titles=doc_title_map,
                 )
-                graph_chunks = list(chunk_text_map.values())
+                # get_chunks_by_ids now returns (text, anchor) tuples so the
+                # citation layer has the structural label available; only the
+                # text is dropped into the LLM prompt here.
+                graph_chunks = [entry[0] for entry in chunk_text_map.values()]
     except Exception as exc:
         log.exception("Graph context retrieval failed, proceeding without graph context")
         rag_errors.append(f"graph context: {exc}")
@@ -201,9 +205,17 @@ async def chat(req: ChatRequest, request: Request):
                 "The user is responsible for compliance with applicable licenses. "
                 "Prefer summaries, citations, and analysis over verbatim reproduction."
             )
+        # Prefix each chunk with its structural anchor (when present) so the
+        # LLM can cite "§4.3 Architectural constraints" instead of paraphrasing
+        # or omitting the source location. Chunks without anchors (pre-#31 or
+        # fixed-window fallback) fall through unchanged.
+        annotated_doc_chunks = [
+            f"[{anc}] {ch}" if anc else ch
+            for ch, anc in zip(doc_chunks, chunk_anchors)
+        ]
         context_parts.append(
             notice_block + "\n\nRelevant information from the user's documents:\n\n"
-            + "\n\n---\n\n".join(doc_chunks)
+            + "\n\n---\n\n".join(annotated_doc_chunks)
         )
     if graph_chunks and graph_context_str:
         context_parts.append(
@@ -233,13 +245,19 @@ async def chat(req: ChatRequest, request: Request):
 
     # Build attribution data for the sources SSE event.
     doc_title_map_outer = {d["id"]: d.get("filename", d["id"]) for d in all_docs}
+    # Structural anchors lag chunk_ids by length when a legacy fallback code
+    # path produced no anchors (e.g. the RAG-error branch); pad defensively.
+    padded_anchors = (chunk_anchors + [""] * len(doc_chunks))[:len(doc_chunks)]
     sources_docs: list[dict] = [
         {
-            "name":  doc_title_map_outer.get(did, did),
-            "chunk": chunk[:100],
-            "score": score,
+            "name":   doc_title_map_outer.get(did, did),
+            "chunk":  chunk[:100],
+            "score":  score,
+            "anchor": anchor,
         }
-        for chunk, did, score in zip(doc_chunks, doc_ids, chunk_scores)
+        for chunk, did, score, anchor in zip(
+            doc_chunks, doc_ids, chunk_scores, padded_anchors,
+        )
     ]
     sources_graph: list[dict] = [
         {

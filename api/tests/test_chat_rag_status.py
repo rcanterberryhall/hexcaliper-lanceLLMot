@@ -42,6 +42,7 @@ def chat_mocks(monkeypatch):
         ["doc1", "doc1"],                    # doc_ids
         ["cid1", "cid2"],                    # chunk_ids
         [0.85, 0.72],                        # scores
+        ["", ""],                            # anchors (empty — legacy doc)
     )))
     monkeypatch.setattr(rag, "get_chunks_by_ids", MagicMock(return_value={}))
     monkeypatch.setattr(graph, "get_context", MagicMock(return_value=[]))

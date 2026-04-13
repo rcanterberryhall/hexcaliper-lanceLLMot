@@ -393,7 +393,7 @@ async def search(
     top_k: int = TOP_K,
     scope_types: list[str] = None,
     scope_ids: list = None,
-) -> tuple[list[str], list[str], list[str], list[float]]:
+) -> tuple[list[str], list[str], list[str], list[float], list[str]]:
     """
     Retrieve the most relevant document chunks for a query.
 
@@ -418,8 +418,12 @@ async def search(
     :type scope_ids: list | None
     :return: A tuple of ``(text_chunks, doc_ids, chunk_ids, scores)`` for
         chunks that pass the distance threshold.  Scores are in [0, 1] with
-        higher values indicating greater similarity.
-    :rtype: tuple[list[str], list[str], list[str], list[float]]
+        higher values indicating greater similarity. Anchors carry the
+        structural citation label (e.g. ``"§4.3 Architectural
+        constraints"``) when the chunk was produced by a structured split;
+        empty string for fixed-window-fallback chunks or documents
+        ingested before the structure-aware chunker (#31).
+    :rtype: tuple[list[str], list[str], list[str], list[float], list[str]]
     """
     if scope_types is None:
         scope_types = ["global"]
@@ -429,7 +433,7 @@ async def search(
 
     col = get_collection()
     if col.count() == 0:
-        return [], [], [], []
+        return [], [], [], [], []
     query_emb = await embed(query)
 
     # Build the ChromaDB metadata filter.
@@ -466,8 +470,8 @@ async def search(
             include=["documents", "distances", "metadatas"],
         )
         if not results["documents"]:
-            return [], [], [], []
-        chunks, doc_ids, chunk_ids, scores = [], [], [], []
+            return [], [], [], [], []
+        chunks, doc_ids, chunk_ids, scores, anchors = [], [], [], [], []
         for doc, dist, meta, cid in zip(
             results["documents"][0],
             results["distances"][0],
@@ -480,10 +484,14 @@ async def search(
                 doc_ids.append(meta.get("doc_id", ""))
                 chunk_ids.append(cid)
                 scores.append(round(1.0 - dist, 4))
-        return chunks, doc_ids, chunk_ids, scores
+                # Pre-#31 chunks have no "anchor" metadata key — default to
+                # "" so the chat layer can treat it as "no structural label
+                # available" uniformly without branching on presence.
+                anchors.append(meta.get("anchor", "") or "")
+        return chunks, doc_ids, chunk_ids, scores, anchors
     except Exception as exc:
         log.warning("query failed: %s", exc)
-        return [], [], [], []
+        return [], [], [], [], []
 
 
 # ── Deletion ───────────────────────────────────────────────────
@@ -538,29 +546,36 @@ def delete_chunks(doc_id: str) -> None:
     col.delete(where={"doc_id": doc_id})
 
 
-def get_chunks_by_ids(chunk_ids: list[str]) -> dict[str, str]:
+def get_chunks_by_ids(chunk_ids: list[str]) -> dict[str, tuple[str, str]]:
     """
-    Fetch chunk texts from ChromaDB by their IDs.
+    Fetch chunk texts (and structural anchors) from ChromaDB by their IDs.
 
-    Used to retrieve the text of graph-context chunks (found via graph
-    traversal) so they can be injected into the prompt alongside the
-    semantically-matched chunks.
+    Used to retrieve graph-context chunks (found via graph traversal) so
+    they can be injected into the prompt alongside the semantically-matched
+    chunks. Anchors are returned alongside so the chat layer can cite
+    "§4.3 Architectural constraints" instead of quoting the first 80
+    characters of the chunk.
 
     :param chunk_ids: List of chunk IDs to retrieve.
     :type chunk_ids: list[str]
-    :return: Mapping of ``{chunk_id: text}`` for found chunks.
-    :rtype: dict[str, str]
+    :return: Mapping of ``{chunk_id: (text, anchor)}`` for found chunks.
+             ``anchor`` is ``""`` for pre-#31 chunks and for fixed-window
+             fallback chunks.
+    :rtype: dict[str, tuple[str, str]]
     """
     if not chunk_ids:
         return {}
     col = get_collection()
     try:
-        results = col.get(ids=chunk_ids, include=["documents"])
-        return {
-            cid: doc
-            for cid, doc in zip(results["ids"], results["documents"])
-            if doc
-        }
+        results = col.get(ids=chunk_ids, include=["documents", "metadatas"])
+        out: dict[str, tuple[str, str]] = {}
+        for cid, doc, meta in zip(
+            results["ids"], results["documents"], results["metadatas"],
+        ):
+            if doc:
+                anchor = (meta or {}).get("anchor", "") or ""
+                out[cid] = (doc, anchor)
+        return out
     except Exception as exc:
         log.warning("collection_stats failed: %s", exc)
         return {}

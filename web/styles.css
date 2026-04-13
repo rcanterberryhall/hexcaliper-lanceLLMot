@@ -875,6 +875,17 @@ body { display: block; }
   text-overflow: ellipsis;
 }
 
+.sources-anchor {
+  width: 100%;
+  color: var(--blue);
+  font-size: 0.68rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .sources-graph-item { gap: 6px; }
 
 .sources-entity {

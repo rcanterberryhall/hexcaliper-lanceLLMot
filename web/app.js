@@ -337,7 +337,10 @@ function addCopyBtn(inner, bubble) {
  * Build a collapsible Sources attribution block showing retrieved documents
  * and graph nodes. Inserted below the assistant message bubble.
  *
- * @param {Object[]} documents - [{name, chunk, score}]
+ * @param {Object[]} documents - [{name, chunk, score, anchor}]
+ *   `anchor` is the structural citation label from the chunker (#31),
+ *   e.g. "§4.3 Architectural constraints" or "## Verification strategy".
+ *   Empty string for fixed-window-fallback chunks or pre-#31 documents.
  * @param {Object[]} graphNodes - [{entity, relation, score}]
  * @returns {HTMLElement} The root element of the sources block.
  */
@@ -363,9 +366,13 @@ function buildSourcesBlock(documents, graphNodes) {
       sec.innerHTML = '<div class="sources-section-title">Documents</div>' +
         documents.map(d => {
           const pct = Math.round((d.score || 0) * 100);
+          const anchorHtml = d.anchor
+            ? `<div class="sources-anchor">${esc(d.anchor)}</div>`
+            : '';
           return `<div class="sources-item">
             <span class="sources-doc-name">${esc(d.name)}</span>
             <span class="sources-score">${pct}%</span>
+            ${anchorHtml}
             <div class="sources-chunk">${esc(d.chunk)}…</div>
           </div>`;
         }).join('');
