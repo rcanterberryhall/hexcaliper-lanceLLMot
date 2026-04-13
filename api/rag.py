@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 import chromadb
+import chunker
 import db
 import extractor
 import graph
@@ -167,9 +168,10 @@ async def ingest(
     :rtype: int
     """
     col = get_collection()
-    chunks = chunk_text(text)
-    if not chunks:
+    structured = chunker.chunk_structured(text)
+    if not structured:
         return 0
+    chunks = [sc.text for sc in structured]
     sem = asyncio.Semaphore(EMBED_CONCURRENCY)
 
     async def _bounded_embed(c: str) -> list[float]:
@@ -191,15 +193,23 @@ async def ingest(
             "user_email": user_email,
             "scope_type": scope_type,
             "scope_id":   scope_id or "",
-        } for _ in chunks],
+            # Structural anchor when present ("" for fixed-window fallback
+            # chunks) — scaffolding for hexcaliper-lanceLLMot#31; future UI
+            # work surfaces this in chat citations and graph views.
+            "anchor":     sc.anchor or "",
+        } for sc in structured],
     )
 
     # ── Knowledge graph indexing ──────────────────────────────────────────────
     ts = uploaded_at or datetime.now(timezone.utc).isoformat()
     graph.index_document(doc_id, user_email, title or doc_id, scope_type=scope_type, scope_id=scope_id, uploaded_at=ts)
-    for i, chunk in enumerate(chunks):
-        graph.index_chunk(chunk_ids[i], doc_id, user_email, scope_type=scope_type, scope_id=scope_id, uploaded_at=ts, label=chunk[:80])
-        graph.parse_and_index_chunk_references(chunk, chunk_ids[i])
+    for i, sc in enumerate(structured):
+        # Prefer the structural anchor as the chunk's graph label — it makes
+        # citations like "§4.3 Architectural constraints" readable instead
+        # of dumping the first 80 chars of raw text.
+        label = sc.anchor or sc.text[:80]
+        graph.index_chunk(chunk_ids[i], doc_id, user_email, scope_type=scope_type, scope_id=scope_id, uploaded_at=ts, label=label)
+        graph.parse_and_index_chunk_references(sc.text, chunk_ids[i])
     # Parse normative references from the full document text (capped to avoid
     # excessive processing on very large files; normative refs are near the top).
     graph.parse_and_index_references(text[:60_000], doc_id)
@@ -272,17 +282,19 @@ async def index_concepts_for_doc(
     This is the same concept-extraction loop that ``ingest()`` runs inline, but
     extracted as a standalone coroutine so callers can schedule it as a
     background task after returning a quick ``POST /documents`` response. The
-    text is re-chunked deterministically (same ``chunk_text`` output and same
-    ``{doc_id}__{i}`` chunk IDs) so it matches what the embedding pass stored
-    in ChromaDB — no need to thread chunks through the caller.
+    text is re-chunked deterministically (same ``chunker.chunk_structured``
+    output and same ``{doc_id}__{i}`` chunk IDs) so it matches what the
+    embedding pass stored in ChromaDB — no need to thread chunks through
+    the caller.
 
     Each chunk's extraction is independently fault-tolerant: a per-chunk
     failure logs a warning and continues. Returns the number of chunks that
     produced at least one concept or entity.
     """
-    chunks = chunk_text(text)
-    if not chunks:
+    structured = chunker.chunk_structured(text)
+    if not structured:
         return 0
+    chunks    = [sc.text for sc in structured]
     chunk_ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
 
     # Same scope hierarchy as ingest() — see rag.ingest for the rationale.
