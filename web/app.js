@@ -1592,6 +1592,8 @@ let wbAllProjects = [];
 let wbDocs        = [];
 // Active scope: { type: 'global'|'client'|'project', clientId, projectId, label }
 let wbScope = { type: 'global', clientId: null, projectId: null, label: 'Global' };
+let wbSortKey = null;
+let wbSortAsc = true;
 
 function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -1667,9 +1669,71 @@ const _WB_DOC_TYPE_OPTIONS = [
   ['app_note','App Note'], ['misc','Misc'],
 ];
 
+const _WB_SAFETY_CRITICAL_TYPES = ['theop', 'fmea', 'hazard_analysis', 'fat', 'sat'];
+const _WB_ALL_COMPLETENESS_TYPES = [
+  'theop', 'fmea', 'hazard_analysis', 'fat', 'sat',
+  'standard', 'requirement', 'contract', 'correspondence',
+  'plc_code', 'technical_manual', 'datasheet', 'firmware_notes', 'app_note', 'misc',
+];
+const _WB_TYPE_ABBREV = {
+  theop: 'THEOP', fmea: 'FMEA', hazard_analysis: 'HA', fat: 'FAT', sat: 'SAT',
+  standard: 'STD', requirement: 'REQ', contract: 'CON', correspondence: 'COR',
+  plc_code: 'PLC', technical_manual: 'MAN', datasheet: 'DS',
+  firmware_notes: 'FW', app_note: 'APP', misc: 'MISC',
+};
+
+function renderWbCompleteness() {
+  const el = document.getElementById('wb-completeness');
+  if (!el) return;
+  if (wbScope.type !== 'project') { el.hidden = true; return; }
+  el.hidden = false;
+  const counts = {};
+  for (const d of wbDocs) counts[d.doc_type] = (counts[d.doc_type] || 0) + 1;
+  el.innerHTML = _WB_ALL_COMPLETENESS_TYPES.map(t => {
+    const count = counts[t] || 0;
+    const critical = _WB_SAFETY_CRITICAL_TYPES.includes(t);
+    const cls = count > 0 ? 'present' : (critical ? 'critical missing' : 'missing');
+    const abbrev = _WB_TYPE_ABBREV[t] || t;
+    return `<span class="wb-completeness-badge ${cls}" title="${t}: ${count} document(s)">`
+      + `${abbrev}${count > 0 ? ' <span class="cb-count">' + count + '</span>' : ''}</span>`;
+  }).join('');
+}
+
+function sortWbRows(rows) {
+  if (!wbSortKey) return rows;
+  const sorted = [...rows];
+  sorted.sort((a, b) => {
+    let va = a[wbSortKey] ?? '';
+    let vb = b[wbSortKey] ?? '';
+    if (wbSortKey === 'chunk_count') return wbSortAsc ? va - vb : vb - va;
+    va = String(va).toLowerCase();
+    vb = String(vb).toLowerCase();
+    return wbSortAsc ? va.localeCompare(vb) : vb.localeCompare(va);
+  });
+  return sorted;
+}
+
+function updateSortHeaders() {
+  document.querySelectorAll('.wb-table th.sortable').forEach(th => {
+    const key = th.dataset.sortKey;
+    const arrow = th.querySelector('.sort-arrow');
+    if (arrow) arrow.remove();
+    th.classList.toggle('sort-active', key === wbSortKey);
+    if (key === wbSortKey) {
+      const span = document.createElement('span');
+      span.className = 'sort-arrow';
+      span.textContent = wbSortAsc ? ' ▲' : ' ▼';
+      th.appendChild(span);
+    }
+  });
+}
+
 function renderWbDocs() {
+  renderWbCompleteness();
+  updateSortHeaders();
   const filter = wbTypeFilter.value;
-  const rows = wbDocs.filter(d => !filter || d.doc_type === filter);
+  const filtered = wbDocs.filter(d => !filter || d.doc_type === filter);
+  const rows = sortWbRows(filtered);
   if (!rows.length) {
     const msg = wbScope.type === 'global' && !wbClients.length
       ? 'No global documents yet. Upload a standard or reference document using the + Upload button.'
@@ -1688,6 +1752,7 @@ function renderWbDocs() {
       <td>${date}</td>
       <td>${d.chunk_count}</td>
       <td class="wb-actions">
+        <button class="wb-download-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Download document">⬇</button>
         <button class="wb-chat-attach-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Add to current conversation">+ Chat</button>
         <button class="wb-edit-btn" data-id="${d.id}" title="Edit attributes">✎</button>
         <button class="wb-del-btn" data-id="${d.id}" data-name="${_esc(d.filename)}" title="Delete document">✕</button>
@@ -1802,6 +1867,34 @@ function _openWbEdit(tr, doc) {
 }
 
 wbDocTbody.addEventListener('click', async e => {
+  const dlBtn = e.target.closest('.wb-download-btn');
+  if (dlBtn) {
+    const docId   = dlBtn.dataset.id;
+    const docName = dlBtn.dataset.name;
+    dlBtn.disabled = true;
+    try {
+      const res = await fetch(`/api/documents/${docId}/download`);
+      if (!res.ok) {
+        setStatus('Download not available — backend endpoint not yet implemented.', 'warning');
+        return;
+      }
+      const blob = await res.blob();
+      const url  = URL.createObjectURL(blob);
+      const a    = document.createElement('a');
+      a.href     = url;
+      a.download = docName;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch {
+      setStatus('Download failed — network error.', 'error');
+    } finally {
+      dlBtn.disabled = false;
+    }
+    return;
+  }
+
   const attachBtn = e.target.closest('.wb-chat-attach-btn');
   if (attachBtn) {
     const docId   = attachBtn.dataset.id;
@@ -1873,6 +1966,15 @@ wbDocTbody.addEventListener('click', async e => {
 });
 
 wbTypeFilter.addEventListener('change', renderWbDocs);
+
+document.querySelector('.wb-table thead').addEventListener('click', e => {
+  const th = e.target.closest('th.sortable');
+  if (!th) return;
+  const key = th.dataset.sortKey;
+  if (wbSortKey === key) wbSortAsc = !wbSortAsc;
+  else { wbSortKey = key; wbSortAsc = true; }
+  renderWbDocs();
+});
 
 wbOpenChatBtn.addEventListener('click', () => {
   if (wbScope.type !== 'project') return;

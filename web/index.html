@@ -193,13 +193,15 @@
         <div class="wb-panel">
           <div class="wb-panel-head">
             <span class="wb-panel-title">Library</span>
-            <button id="wb-manage-btn" class="icon-btn" title="Manage clients &amp; projects">⚙ Manage</button>
+            <button id="wb-manage-btn" class="icon-btn" title="Manage clients &amp; projects">🗂 Manage</button>
           </div>
           <div id="wb-scope-list"></div>
         </div>
 
         <!-- Right: filter bar + document table -->
         <div class="wb-content">
+          <!-- Completeness grid — visible when a project scope is selected -->
+          <div id="wb-completeness" class="wb-completeness" hidden></div>
           <div class="wb-filter-bar">
             <!-- Filter section -->
             <label class="wb-label" for="wb-type-filter">Filter</label>
@@ -251,7 +253,7 @@
             <table class="wb-table">
               <thead>
                 <tr>
-                  <th>Filename</th><th>Type</th><th>Scope</th><th>Uploaded</th><th>Chunks</th><th></th>
+                  <th class="sortable" data-sort-key="filename">Filename</th><th class="sortable" data-sort-key="doc_type">Type</th><th class="sortable" data-sort-key="scope_type">Scope</th><th class="sortable" data-sort-key="created_at">Uploaded</th><th class="sortable" data-sort-key="chunk_count">Chunks</th><th></th>
                 </tr>
               </thead>
               <tbody id="wb-doc-tbody">
@@ -327,14 +329,17 @@
             <p>Manage your document library organised by client and project. Documents uploaded here persist permanently and are available across all sessions.</p>
             <table class="help-table">
               <tr><th>Control</th><th>What it does</th></tr>
-              <tr><td>⚙ Manage</td><td>Open the Library Manager to create or delete clients and projects.</td></tr>
+              <tr><td>🗂 Manage</td><td>Open the Library Manager to create or delete clients and projects.</td></tr>
               <tr><td>Global row</td><td>Select to view all global-scope documents (ISO/IEC standards, shared references).</td></tr>
               <tr><td>Client row</td><td>Select to view documents for that client (contracts, client requirements).</td></tr>
               <tr><td>Project row</td><td>Select to view all documents in scope for that project: global + client + project-specific.</td></tr>
+              <tr><td>Completeness grid</td><td>Shown only when a project is selected. Green = present; red = safety-critical doc missing (THEOP, FMEA, HA, FAT, SAT); grey = non-critical absent.</td></tr>
               <tr><td>Type filter</td><td>Filter the document list by document type.</td></tr>
+              <tr><td>Column header (click)</td><td>Sort the document table by that column. Click again to reverse direction.</td></tr>
               <tr><td>Upload as / + Upload</td><td>Select one or many files to upload to the selected scope. Files are stored and embedded immediately but concept extraction is deferred — categorise them first, then click Index Documents.</td></tr>
               <tr><td>Index Documents</td><td>Run concept extraction and summarisation on all documents in the current scope. Use this after uploading and categorising a batch of files.</td></tr>
               <tr><td>Open in Chat</td><td>Switch to Chat tab with this project's full document scope loaded as context.</td></tr>
+              <tr><td>⬇ (row)</td><td>Download the original source document.</td></tr>
               <tr><td>✎ (row)</td><td>Edit the document's filename, type, and classification inline without re-uploading.</td></tr>
               <tr><td>✕ (row)</td><td>Delete a document. Removes it from storage and the knowledge graph. Requires confirmation.</td></tr>
             </table>

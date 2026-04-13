@@ -1685,6 +1685,81 @@ tr.wb-editing td { opacity: 0.5; }
 .wb-edit-cancel:hover { color: var(--text); border-color: var(--text-muted); }
 .wb-edit-save:disabled { opacity: 0.5; cursor: default; }
 
+/* ── Sortable table headers ─────────────────────────────────── */
+.wb-table th.sortable {
+  cursor: pointer;
+  user-select: none;
+  position: relative;
+  padding-right: 18px;
+}
+.wb-table th.sortable:hover { color: var(--gold); }
+.wb-table th.sortable .sort-arrow {
+  font-size: 0.6rem;
+  margin-left: 3px;
+  opacity: 0.7;
+}
+.wb-table th.sortable.sort-active { color: var(--gold-bright); }
+
+/* ── Completeness grid ─────────────────────────────────────── */
+.wb-completeness {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+}
+.wb-completeness-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  padding: 2px 8px;
+  border-radius: 4px;
+  border: 1px solid;
+  text-transform: uppercase;
+}
+.wb-completeness-badge.present {
+  background: rgba(34,197,94,0.1);
+  border-color: rgba(34,197,94,0.35);
+  color: #4ade80;
+}
+.wb-completeness-badge.missing {
+  background: rgba(107,114,128,0.06);
+  border-color: rgba(107,114,128,0.25);
+  color: var(--text-muted);
+  opacity: 0.6;
+}
+.wb-completeness-badge.critical.missing {
+  background: rgba(239,68,68,0.08);
+  border-color: rgba(239,68,68,0.3);
+  color: #f87171;
+  opacity: 1;
+}
+.wb-completeness-badge .cb-count {
+  font-size: 0.62rem;
+  background: rgba(255,255,255,0.08);
+  border-radius: 3px;
+  padding: 0 4px;
+  min-width: 14px;
+  text-align: center;
+}
+
+/* ── Download button in workbench table ────────────────────── */
+.wb-download-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.8rem;
+  padding: 2px 6px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.wb-download-btn:hover { color: var(--gold); border-color: var(--gold); }
+
 /* ── Error bar ──────────────────────────────────────────────── */
 #error-bar {
   display: flex;
