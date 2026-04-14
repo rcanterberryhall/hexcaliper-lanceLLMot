@@ -657,23 +657,6 @@ body { display: block; }
   color: var(--text-muted);
 }
 
-#upload-label {
-  cursor: pointer;
-  font-size: 1rem;
-  font-weight: 700;
-  color: var(--text-muted);
-  padding: 0 4px;
-  border-radius: 4px;
-  transition: color 0.15s, background 0.15s;
-  line-height: 1;
-}
-
-#upload-label:hover { color: var(--gold); background: var(--surface-2); }
-
-#doc-list {
-  overflow-y: auto;
-  padding: 0 0 8px;
-}
 
 .doc-item {
   display: flex;
@@ -914,14 +897,6 @@ body { display: block; }
   opacity: 0.8;
 }
 
-/* ── Copyright notice ───────────────────────────────────────── */
-.copyright-notice {
-  font-size: 0.62rem;
-  color: #ffffff;
-  opacity: 0.6;
-  margin: 6px 8px 0;
-  line-height: 1.4;
-}
 
 /* ── Live search indicator ──────────────────────────────────── */
 .search-badge {

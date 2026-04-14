@@ -6,7 +6,7 @@
     #app (flex row)
     ├── <aside id="sidebar">     — collapsible left panel
     │     ├── conversation list  — populated by fetchConversations()
-    │     ├── global doc list    — populated by fetchDocuments()
+    │     ├── system prompt      — selector + inline editor
     │     └── chat doc list      — populated by fetchChatDocuments(); hidden until a conversation is active
     └── #main (flex column)
           ├── <header>           — branding, GPU meter, model selector
@@ -41,21 +41,6 @@
       <!-- Conversation history; items injected by renderConvList() -->
       <div id="conv-list" role="list"></div>
 
-      <div class="sidebar-divider"></div>
-
-      <!-- Global documents — persist across all conversations -->
-      <div class="sidebar-section-header">
-        <span>Global Documents</span>
-        <label id="upload-label" title="Upload document (.pdf, .docx, .txt, .md)">
-          +
-          <!-- Hidden file input; triggered by clicking the label -->
-          <input type="file" id="doc-upload" accept=".pdf,.docx,.xlsx,.txt,.md" hidden />
-        </label>
-      </div>
-      <div id="doc-list" role="list"></div>
-      <p class="copyright-notice">Documents may contain copyrighted material. You are responsible for ensuring your use complies with applicable licenses.</p>
-
-      <!-- System Prompts section -->
       <div class="sidebar-divider"></div>
       <div class="sidebar-section-header">
         <span>System Prompt</span>
@@ -316,8 +301,7 @@
               <tr><td>Escalate →</td><td>Appears below each assistant response. Sends the query to a cloud model (Anthropic/OpenAI) for a second opinion. Always requires manual approval if client documents were in context.</td></tr>
               <tr><td>Sources ▸</td><td>Collapsible section below each response showing which documents, chunk snippets, relevance scores, and graph nodes informed the answer. Shows "No documents matched" when RAG returned zero results.</td></tr>
               <tr><td>Scope badge</td><td>Persistent badge in the chat header showing the active scope (Global / Client:Name / Project:Name / Session), document count, and a ⚠ warning when the scope has zero documents.</td></tr>
-              <tr><td>Global Documents +</td><td>Upload a document visible across all conversations (global scope). Good for standards and reference material.</td></tr>
-              <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started.</td></tr>
+              <tr><td>Chat Documents +</td><td>Upload a document scoped only to this conversation. Appears after the first conversation is started. For persistent documents, use the Workbench tab.</td></tr>
               <tr><td>System Prompt (sidebar)</td><td>Select a saved system prompt to assign it to the active conversation. Use + to create a new prompt, ✎ to edit the selected one. A "SP" badge appears on conversations that have a prompt assigned.</td></tr>
               <tr><td>⬇ Export (conv menu)</td><td>Export the active conversation as Markdown or JSON. Markdown includes the title, system prompt, model, and all messages. JSON includes the full conversation structure.</td></tr>
             </table>
