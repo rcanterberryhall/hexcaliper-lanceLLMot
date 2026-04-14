@@ -10,8 +10,6 @@ const convList      = document.getElementById('conv-list');
 const newChatBtn    = document.getElementById('new-chat-btn');
 const sidebarToggle = document.getElementById('sidebar-toggle');
 const sidebar       = document.getElementById('sidebar');
-const docList           = document.getElementById('doc-list');
-const docUpload         = document.getElementById('doc-upload');
 const chatDocList       = document.getElementById('chat-doc-list');
 const chatDocUpload     = document.getElementById('chat-doc-upload');
 const chatDocsDivider   = document.getElementById('chat-docs-divider');
@@ -943,53 +941,9 @@ async function _uploadDoc(file, listEl, conversationId) {
     gpuFastInterval = null;
     placeholder.remove();
     if (conversationId) await fetchChatDocuments(conversationId);
-    else await fetchDocuments();
     await Promise.all([pollModelStatus(), pollAnalysisModelStatus()]);
   }
 }
-
-// ── Global documents ──────────────────────────────────────────
-
-/**
- * Fetches the list of globally-scoped documents from the API and renders them.
- *
- * @return {Promise<void>}
- */
-async function fetchDocuments() {
-  try {
-    const res = await fetch('/api/documents');
-    if (!res.ok) return;
-    renderDocList(await res.json());
-    updateScopeBadge();
-  } catch (_) {}
-}
-
-/**
- * Renders the global document list in the sidebar.
- *
- * Clears the existing list and rebuilds it.  Each item's delete button
- * calls the API and refreshes the list on success.
- *
- * @param {Array<{id: string, filename: string, chunk_count: number}>} docs - Documents
- *   returned by the API.
- * @return {void}
- */
-function renderDocList(docs) {
-  docList.innerHTML = '';
-  for (const doc of docs) {
-    docList.appendChild(_makeDocItem(doc, async () => {
-      await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
-      await fetchDocuments();
-    }));
-  }
-}
-
-docUpload.addEventListener('change', async () => {
-  const file = docUpload.files[0];
-  if (!file) return;
-  docUpload.value = '';
-  await _uploadDoc(file, docList, null);
-});
 
 // ── Chat-scoped documents ─────────────────────────────────────
 
@@ -2486,7 +2440,6 @@ async function applySiteConfig() {
 applySiteConfig();
 fetchModels().then(() => Promise.all([pollModelStatus(), pollAnalysisModelStatus()]));
 fetchConversations();
-fetchDocuments();
 updateScopeBadge();
 
 // "Browse library" button in chat docs header → switch to workbench
@@ -2504,8 +2457,11 @@ if (browseLibraryBtn) {
 
 if (scopeBadge) {
   scopeBadge.addEventListener('click', () => {
-    sidebar.classList.remove('collapsed');
-    docList.closest('section,div')?.scrollIntoView?.({ behavior: 'smooth' });
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelector('.tab-btn[data-tab="workbench"]').classList.add('active');
+    chatView.hidden      = true;
+    workbenchView.hidden = false;
+    loadWorkbench();
   });
 }
 fetchSystemPrompts();
