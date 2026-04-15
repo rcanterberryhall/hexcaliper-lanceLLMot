@@ -182,8 +182,23 @@ async def ingest(
             # client-side concurrency to EMBED_CONCURRENCY.
             return await embed(c)
 
-    embeddings = await asyncio.gather(*[_bounded_embed(c) for c in chunks])
-    chunk_ids = [f"{doc_id}__{i}" for i in range(len(chunks))]
+    # return_exceptions so one oversized chunk doesn't kill the whole upload —
+    # nomic-embed-text 500s when input exceeds its 2048-token architectural cap
+    # and asyncio.gather without this flag aborts the entire ingest.
+    raw = await asyncio.gather(
+        *[_bounded_embed(c) for c in chunks], return_exceptions=True,
+    )
+    kept = [i for i, r in enumerate(raw) if not isinstance(r, Exception)]
+    for i, r in enumerate(raw):
+        if isinstance(r, Exception):
+            log.warning("ingest %s: chunk %d (%d chars) embed failed: %s",
+                        doc_id, i, len(chunks[i]), r)
+    if not kept:
+        return 0
+    chunks     = [chunks[i] for i in kept]
+    structured = [structured[i] for i in kept]
+    embeddings = [raw[i] for i in kept]
+    chunk_ids  = [f"{doc_id}__{i}" for i in range(len(chunks))]
     col.add(
         ids=chunk_ids,
         embeddings=embeddings,

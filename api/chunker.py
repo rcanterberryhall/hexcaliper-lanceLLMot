@@ -47,12 +47,11 @@ from typing import Optional
 # The min/max define a "comfortable" chunk size for the downstream extractor
 # and embedder. They are soft limits — a section shorter than MIN_CHUNK_CHARS
 # is merged into its successor, a section longer than MAX_CHUNK_CHARS is
-# sub-split. The values were picked so that a typical section-level chunk
-# fits comfortably under the 8192-token extractor num_ctx (#30) with room for
-# the system prompt and scaffolding, while still being long enough to carry
-# a complete argument.
+# sub-split. MAX is bounded by the embedder, not the extractor: nomic-embed-text
+# has a 2048-token architectural cap (BERT WordPiece, dense technical text
+# tokenizes ~1 token per 1.2 chars), so 1500 chars leaves comfortable headroom.
 MIN_CHUNK_CHARS = 200
-MAX_CHUNK_CHARS = 2500
+MAX_CHUNK_CHARS = 1500
 
 # Fixed-window fallback — intentionally matches the legacy rag.chunk_text
 # behavior so structureless inputs stay bit-compatible with pre-#31 output.
