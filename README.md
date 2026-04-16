@@ -59,6 +59,7 @@ No data leaves your machine unless you explicitly approve it.
 
 ### Workbench
 - **Document attribute editing** — after upload, click the ✎ button on any document to edit its filename, doc type, and classification inline
+- **Bulk attribute editing** — select multiple documents with the row checkboxes (or the header checkbox to toggle everything currently shown) and apply doc type, scope, and classification to all of them in one step; any field left at "Keep current" is unchanged per-document
 - **Scope hierarchy** — global, client, project, and session scopes; project view inherits all parent-scope documents
 
 ### System

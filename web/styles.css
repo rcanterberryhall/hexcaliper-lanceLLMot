@@ -1600,6 +1600,73 @@ body { display: block; }
 
 .wb-actions { white-space: nowrap; }
 
+/* ── Bulk selection ──────────────────────────────────────────── */
+.wb-table th.wb-check-col,
+.wb-table td.wb-check-col {
+  width: 28px;
+  padding-right: 0;
+  text-align: center;
+}
+
+.wb-row-check,
+#wb-check-all {
+  cursor: pointer;
+  vertical-align: middle;
+}
+
+.wb-table tr.wb-row-selected td {
+  background: rgba(212, 160, 23, 0.06);
+}
+.wb-table tr.wb-row-selected:hover td {
+  background: rgba(212, 160, 23, 0.12);
+}
+
+.wb-bulk-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  margin-bottom: 6px;
+  background: rgba(212, 160, 23, 0.08);
+  border: 1px solid rgba(212, 160, 23, 0.35);
+  border-radius: var(--radius);
+  font-size: 0.82rem;
+  color: var(--text);
+}
+
+.wb-bulk-bar .wb-bulk-count {
+  color: var(--text-muted);
+  margin-right: auto;
+}
+.wb-bulk-bar .wb-bulk-count strong { color: var(--gold); }
+
+.wb-bulk-target {
+  font-size: 0.82rem;
+  color: var(--text);
+  margin: 0 0 14px;
+  line-height: 1.5;
+}
+.wb-bulk-target em { color: var(--gold); font-style: italic; }
+.wb-bulk-target strong { color: var(--gold); }
+
+.wb-bulk-form {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 10px 12px;
+  align-items: center;
+}
+
+.wb-bulk-warning {
+  margin: 12px 0 0;
+  padding: 8px 10px;
+  background: rgba(239, 68, 68, 0.08);
+  border: 1px solid rgba(239, 68, 68, 0.35);
+  border-radius: var(--radius);
+  color: #fca5a5;
+  font-size: 0.78rem;
+  line-height: 1.45;
+}
+
 .wb-chat-attach-btn {
   background: none;
   border: 1px solid rgba(64,184,255,0.30);

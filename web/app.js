@@ -1590,6 +1590,9 @@ let wbDocs        = [];
 let wbScope = { type: 'global', clientId: null, projectId: null, label: 'Global' };
 let wbSortKey = null;
 let wbSortAsc = true;
+// Doc IDs currently checked in the table. Cleared whenever the underlying
+// doc list reloads — the render pass drops any IDs no longer present.
+const wbSelectedIds = new Set();
 
 function _esc(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
@@ -1742,18 +1745,28 @@ function renderWbDocs() {
   const filter = wbTypeFilter.value;
   const filtered = wbDocs.filter(d => !filter || d.doc_type === filter);
   const rows = sortWbRows(filtered);
+
+  // Drop any selections that are no longer visible (scope change, filter change,
+  // or deletion) so the bulk bar count always reflects reality.
+  const visibleIds = new Set(rows.map(d => d.id));
+  for (const id of wbSelectedIds) if (!visibleIds.has(id)) wbSelectedIds.delete(id);
+
   if (!rows.length) {
     const msg = wbScope.type === 'global' && !wbClients.length
       ? 'No global documents yet. Upload a standard or reference document using the + Upload button.'
       : 'No documents found for this scope.';
-    wbDocTbody.innerHTML = `<tr class="wb-empty-row"><td colspan="6">${msg}</td></tr>`;
+    wbDocTbody.innerHTML = `<tr class="wb-empty-row"><td colspan="7">${msg}</td></tr>`;
+    updateWbBulkBar();
     return;
   }
   wbDocTbody.innerHTML = '';
   rows.forEach(d => {
     const tr = document.createElement('tr');
     const date = (d.created_at || '').slice(0, 10);
+    const checked = wbSelectedIds.has(d.id) ? ' checked' : '';
+    if (checked) tr.classList.add('wb-row-selected');
     tr.innerHTML = `
+      <td class="wb-check-col"><input type="checkbox" class="wb-row-check" data-id="${d.id}"${checked} /></td>
       <td title="${_esc(d.filename)}">${_esc(d.filename)}</td>
       <td><span class="doc-type-badge">${_esc(d.doc_type)}</span></td>
       <td><span class="scope-badge ${d.scope_type}">${d.scope_type}</span></td>
@@ -1767,6 +1780,7 @@ function renderWbDocs() {
       </td>`;
     wbDocTbody.appendChild(tr);
   });
+  updateWbBulkBar();
 }
 
 function _openWbEdit(tr, doc) {
@@ -1982,6 +1996,201 @@ document.querySelector('.wb-table thead').addEventListener('click', e => {
   if (wbSortKey === key) wbSortAsc = !wbSortAsc;
   else { wbSortKey = key; wbSortAsc = true; }
   renderWbDocs();
+});
+
+// ── Bulk selection + edit ─────────────────────────────────────
+const wbCheckAll        = document.getElementById('wb-check-all');
+const wbBulkBar         = document.getElementById('wb-bulk-bar');
+const wbBulkCountN      = document.getElementById('wb-bulk-count-n');
+const wbBulkEditBtn     = document.getElementById('wb-bulk-edit-btn');
+const wbBulkClearBtn    = document.getElementById('wb-bulk-clear-btn');
+const wbBulkBackdrop    = document.getElementById('wb-bulk-backdrop');
+const wbBulkModal       = document.getElementById('wb-bulk-modal');
+const wbBulkClose       = document.getElementById('wb-bulk-close');
+const wbBulkCancel      = document.getElementById('wb-bulk-cancel');
+const wbBulkSave        = document.getElementById('wb-bulk-save');
+const wbBulkTargetN     = document.getElementById('wb-bulk-target-n');
+const wbBulkDocType     = document.getElementById('wb-bulk-doc-type');
+const wbBulkScope       = document.getElementById('wb-bulk-scope');
+const wbBulkClass       = document.getElementById('wb-bulk-classification');
+const wbBulkWarning     = document.getElementById('wb-bulk-warning');
+const wbBulkStatus      = document.getElementById('wb-bulk-status');
+
+function updateWbBulkBar() {
+  const n = wbSelectedIds.size;
+  wbBulkBar.hidden = n === 0;
+  wbBulkCountN.textContent = String(n);
+  // Keep the "select all" checkbox state aligned with the rendered rows.
+  const rowChecks = wbDocTbody.querySelectorAll('.wb-row-check');
+  const total = rowChecks.length;
+  const checked = Array.from(rowChecks).filter(c => c.checked).length;
+  wbCheckAll.checked       = total > 0 && checked === total;
+  wbCheckAll.indeterminate = checked > 0 && checked < total;
+}
+
+wbDocTbody.addEventListener('change', e => {
+  const cb = e.target.closest('.wb-row-check');
+  if (!cb) return;
+  const id = cb.dataset.id;
+  if (cb.checked) wbSelectedIds.add(id);
+  else wbSelectedIds.delete(id);
+  cb.closest('tr').classList.toggle('wb-row-selected', cb.checked);
+  updateWbBulkBar();
+});
+
+wbCheckAll.addEventListener('change', () => {
+  const want = wbCheckAll.checked;
+  wbDocTbody.querySelectorAll('.wb-row-check').forEach(cb => {
+    cb.checked = want;
+    const id = cb.dataset.id;
+    if (want) wbSelectedIds.add(id);
+    else wbSelectedIds.delete(id);
+    cb.closest('tr').classList.toggle('wb-row-selected', want);
+  });
+  updateWbBulkBar();
+});
+
+wbBulkClearBtn.addEventListener('click', () => {
+  wbSelectedIds.clear();
+  wbDocTbody.querySelectorAll('.wb-row-check').forEach(cb => {
+    cb.checked = false;
+    cb.closest('tr').classList.remove('wb-row-selected');
+  });
+  updateWbBulkBar();
+});
+
+function _buildBulkScopeOptions() {
+  const opts = ['<option value="">Keep current</option>',
+                '<option value="global:">Global</option>'];
+  wbClients.forEach(c => {
+    opts.push(`<option value="client:${_esc(c.id)}">Client: ${_esc(c.name)}</option>`);
+  });
+  wbAllProjects.forEach(p => {
+    const cl = wbClients.find(c => c.id === p.client_id);
+    const lbl = cl ? `${_esc(p.name)} (${_esc(cl.name)})` : _esc(p.name);
+    opts.push(`<option value="project:${_esc(p.id)}">Project: ${lbl}</option>`);
+  });
+  return opts.join('');
+}
+
+function _buildBulkDocTypeOptions() {
+  const opts = ['<option value="">Keep current</option>'];
+  _WB_DOC_TYPE_OPTIONS.forEach(([v, l]) => {
+    opts.push(`<option value="${v}">${l}</option>`);
+  });
+  return opts.join('');
+}
+
+function _refreshBulkWarning() {
+  // Warn if the user picked classification=public while also moving scope to
+  // client/project — the backend will reject it, so catch it client-side.
+  const scopeVal = wbBulkScope.value;
+  const cls = wbBulkClass.value;
+  const restricted = scopeVal.startsWith('client:') || scopeVal.startsWith('project:');
+  if (restricted && cls === 'public') {
+    wbBulkWarning.textContent = 'Client and project scopes cannot be classified as public. Pick a different classification or leave it at Keep current.';
+    wbBulkWarning.hidden = false;
+  } else {
+    wbBulkWarning.hidden = true;
+  }
+}
+
+function openBulkModal() {
+  if (wbSelectedIds.size === 0) return;
+  wbBulkDocType.innerHTML = _buildBulkDocTypeOptions();
+  wbBulkScope.innerHTML   = _buildBulkScopeOptions();
+  wbBulkDocType.value = '';
+  wbBulkScope.value   = '';
+  wbBulkClass.value   = '';
+  wbBulkTargetN.textContent = String(wbSelectedIds.size);
+  wbBulkWarning.hidden = true;
+  wbBulkStatus.textContent = '';
+  wbBulkSave.disabled = false;
+  wbBulkSave.textContent = 'Apply';
+  wbBulkBackdrop.hidden = false;
+  wbBulkModal.hidden    = false;
+}
+
+function closeBulkModal() {
+  wbBulkBackdrop.hidden = true;
+  wbBulkModal.hidden    = true;
+}
+
+wbBulkEditBtn.addEventListener('click', openBulkModal);
+wbBulkClose .addEventListener('click', closeBulkModal);
+wbBulkCancel.addEventListener('click', closeBulkModal);
+wbBulkBackdrop.addEventListener('click', closeBulkModal);
+wbBulkScope .addEventListener('change', _refreshBulkWarning);
+wbBulkClass .addEventListener('change', _refreshBulkWarning);
+
+wbBulkSave.addEventListener('click', async () => {
+  const ids = Array.from(wbSelectedIds);
+  if (!ids.length) { closeBulkModal(); return; }
+
+  const body = {};
+  if (wbBulkDocType.value) body.doc_type = wbBulkDocType.value;
+  if (wbBulkScope.value) {
+    const [scope_type, scope_id] = wbBulkScope.value.split(':');
+    body.scope_type = scope_type;
+    body.scope_id   = scope_id || null;
+  }
+  if (wbBulkClass.value) body.classification = wbBulkClass.value;
+
+  if (!Object.keys(body).length) {
+    wbBulkStatus.textContent = 'Nothing to change — pick at least one field.';
+    return;
+  }
+
+  const restricted = body.scope_type === 'client' || body.scope_type === 'project';
+  if (restricted && body.classification === 'public') {
+    _refreshBulkWarning();
+    return;
+  }
+
+  wbBulkSave.disabled = true;
+  wbBulkSave.textContent = 'Applying…';
+  wbBulkStatus.textContent = `0 / ${ids.length} done`;
+
+  let done = 0;
+  let failed = 0;
+  const firstErrors = [];
+  await Promise.all(ids.map(async id => {
+    try {
+      const res = await fetch(`/api/documents/${id}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (res.ok) {
+        done++;
+      } else {
+        failed++;
+        if (firstErrors.length < 3) {
+          const err = await res.json().catch(() => ({}));
+          firstErrors.push(err.detail || `HTTP ${res.status}`);
+        }
+      }
+    } catch {
+      failed++;
+      if (firstErrors.length < 3) firstErrors.push('Network error');
+    } finally {
+      wbBulkStatus.textContent = `${done + failed} / ${ids.length} done`;
+    }
+  }));
+
+  if (failed === 0) {
+    closeBulkModal();
+    wbSelectedIds.clear();
+    await loadWbDocs();
+    setStatus(`Updated ${done} document${done === 1 ? '' : 's'}.`, 'info');
+  } else {
+    wbBulkSave.disabled = false;
+    wbBulkSave.textContent = 'Apply';
+    wbBulkStatus.textContent = `${done} updated, ${failed} failed — ${firstErrors.join('; ')}`;
+    // Reload the table so successful updates are reflected; selections that
+    // actually succeeded are no longer on those rows' old state.
+    await loadWbDocs();
+  }
 });
 
 wbOpenChatBtn.addEventListener('click', () => {

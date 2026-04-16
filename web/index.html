@@ -227,20 +227,59 @@
             <button id="wb-open-chat-btn" class="wb-chat-btn" disabled title="Open a new chat with this project's documents in context">Open in Chat</button>
           </div>
 
+          <div id="wb-bulk-bar" class="wb-bulk-bar" hidden>
+            <span class="wb-bulk-count"><strong id="wb-bulk-count-n">0</strong> selected</span>
+            <button id="wb-bulk-edit-btn" class="wb-chat-btn" title="Edit type, scope, or classification for the selected documents">Edit attributes</button>
+            <button id="wb-bulk-clear-btn" class="icon-btn" title="Clear selection">Clear</button>
+          </div>
+
           <div class="wb-table-wrap">
             <table class="wb-table">
               <thead>
                 <tr>
-                  <th class="sortable" data-sort-key="filename">Filename</th><th class="sortable" data-sort-key="doc_type">Type</th><th class="sortable" data-sort-key="scope_type">Scope</th><th class="sortable" data-sort-key="created_at">Uploaded</th><th class="sortable" data-sort-key="chunk_count">Chunks</th><th></th>
+                  <th class="wb-check-col"><input type="checkbox" id="wb-check-all" title="Select all visible documents" /></th><th class="sortable" data-sort-key="filename">Filename</th><th class="sortable" data-sort-key="doc_type">Type</th><th class="sortable" data-sort-key="scope_type">Scope</th><th class="sortable" data-sort-key="created_at">Uploaded</th><th class="sortable" data-sort-key="chunk_count">Chunks</th><th></th>
                 </tr>
               </thead>
               <tbody id="wb-doc-tbody">
-                <tr class="wb-empty-row"><td colspan="6">Select a scope from the panel to view documents.</td></tr>
+                <tr class="wb-empty-row"><td colspan="7">Select a scope from the panel to view documents.</td></tr>
               </tbody>
             </table>
           </div>
         </div>
 
+      </div>
+
+
+      <!-- ── Bulk edit modal ── -->
+      <div id="wb-bulk-backdrop" class="modal-backdrop" hidden></div>
+      <div id="wb-bulk-modal" class="modal" hidden>
+        <div class="modal-head">
+          <span class="modal-head-title">EDIT ATTRIBUTES</span>
+          <button class="modal-close" id="wb-bulk-close">✕</button>
+        </div>
+        <div class="modal-body">
+          <p class="wb-bulk-target">Applying to <strong id="wb-bulk-target-n">0</strong> selected document(s). Fields left at <em>Keep current</em> are unchanged per document.</p>
+          <div class="wb-bulk-form">
+            <label class="wb-edit-label" for="wb-bulk-doc-type">Type</label>
+            <select id="wb-bulk-doc-type" class="wb-edit-select"></select>
+            <label class="wb-edit-label" for="wb-bulk-scope">Scope</label>
+            <select id="wb-bulk-scope" class="wb-edit-select"></select>
+            <label class="wb-edit-label" for="wb-bulk-classification">Classification</label>
+            <select id="wb-bulk-classification" class="wb-edit-select">
+              <option value="">Keep current</option>
+              <option value="client">Client (confidential)</option>
+              <option value="public">Public</option>
+            </select>
+          </div>
+          <p id="wb-bulk-warning" class="wb-bulk-warning" hidden></p>
+        </div>
+        <div class="modal-foot">
+          <span id="wb-bulk-status" class="wb-upload-status"></span>
+          <div style="display:flex; gap:8px;">
+            <button id="wb-bulk-cancel" class="wb-edit-cancel">Cancel</button>
+            <button id="wb-bulk-save" class="wb-edit-save">Apply</button>
+          </div>
+        </div>
       </div>
 
 
@@ -323,6 +362,8 @@
               <tr><td>Open in Chat</td><td>Switch to Chat tab with this project's full document scope loaded as context.</td></tr>
               <tr><td>⬇ (row)</td><td>Download the original source document.</td></tr>
               <tr><td>✎ (row)</td><td>Edit the document's filename, type, and classification inline without re-uploading.</td></tr>
+              <tr><td>☐ (row / header)</td><td>Select documents. The header checkbox toggles every row currently shown. A bulk-edit bar appears above the table with an Edit attributes button when at least one row is selected.</td></tr>
+              <tr><td>Edit attributes (bulk bar)</td><td>Change type, scope, and classification for all selected documents in one step. Fields left at "Keep current" are not modified. Filename is per-document only; use the row's ✎ button instead.</td></tr>
               <tr><td>✕ (row)</td><td>Delete a document. Removes it from storage and the knowledge graph. Requires confirmation.</td></tr>
             </table>
             <div class="help-tip">Recommended workflow for a batch of new documents: Set the document type and classification → upload all files → use ✎ to adjust individual attributes if needed → click Index Documents to build the knowledge graph.</div>
