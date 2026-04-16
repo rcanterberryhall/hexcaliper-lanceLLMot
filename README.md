@@ -27,6 +27,7 @@ No data leaves your machine unless you explicitly approve it.
 - **Autonomous web search** — tool-capable models (Qwen3, Qwen2.5, Mistral) search DuckDuckGo automatically when current information is needed
 - **URL fetching** — paste a URL into your message and the page content is fetched and included as context
 - **Escalate to Cloud** — each assistant response has an "Escalate →" button to send the query to a cloud model (Anthropic/OpenAI) for a second opinion; held for manual approval if client documents are in context
+- **Copyright acknowledgement** — a compliance notice is shown once per browser session before the chat input is enabled, reminding users that uploaded and discussed material may be copyrighted
 
 ### Technical Library
 - **Category browser** — documents grouped by type (Standards, Manuals, Datasheets, etc.) with a per-source filter; not all library documents are manufacturer docs

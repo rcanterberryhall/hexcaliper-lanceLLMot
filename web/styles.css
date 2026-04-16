@@ -1338,6 +1338,9 @@ body { display: block; }
 }
 
 .help-modal { width: 620px; }
+.copyright-modal { width: 480px; }
+.copyright-modal .modal-body p { margin: 0 0 10px; line-height: 1.5; }
+.copyright-modal .modal-body p:last-child { margin-bottom: 0; }
 
 .modal-head {
   display: flex;

@@ -798,11 +798,46 @@ async function deleteConversation(id) {
   } catch (_) {}
 }
 
+// ── Copyright acknowledgement ─────────────────────────────────
+// Must be acknowledged once per browser session before a chat can be used.
+const COPYRIGHT_ACK_KEY = 'lancellmot_copyright_ack';
+const copyrightBackdrop = document.getElementById('copyright-backdrop');
+const copyrightModal    = document.getElementById('copyright-modal');
+const copyrightAckBtn   = document.getElementById('copyright-ack-btn');
+
+function copyrightAcknowledged() {
+  try { return sessionStorage.getItem(COPYRIGHT_ACK_KEY) === '1'; }
+  catch (_) { return false; }
+}
+
+function showCopyrightNotice() {
+  copyrightBackdrop.hidden = false;
+  copyrightModal.hidden    = false;
+  input.disabled           = true;
+  sendBtn.disabled         = true;
+  copyrightAckBtn.focus();
+}
+
+function acknowledgeCopyright() {
+  try { sessionStorage.setItem(COPYRIGHT_ACK_KEY, '1'); } catch (_) {}
+  copyrightBackdrop.hidden = true;
+  copyrightModal.hidden    = true;
+  input.disabled           = false;
+  sendBtn.disabled         = false;
+  input.focus();
+}
+
+copyrightAckBtn.addEventListener('click', acknowledgeCopyright);
+
+if (!copyrightAcknowledged()) showCopyrightNotice();
+
 /**
  * Resets the UI to a blank new-chat state.
  *
  * Clears the chat window, empties the chat-document list, deselects any
  * active sidebar item, hides the chat-docs section, and focuses the input.
+ * Requires the copyright notice to be acknowledged before the input is
+ * usable (per issue #36).
  *
  * @return {void}
  */
@@ -813,6 +848,10 @@ function newChat() {
   setActiveConvItem(null);
   setChatDocsVisible(false);
   syncSpForConversation(null);
+  if (!copyrightAcknowledged()) {
+    showCopyrightNotice();
+    return;
+  }
   input.focus();
 }
 

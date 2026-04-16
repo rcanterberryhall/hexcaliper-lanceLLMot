@@ -295,6 +295,11 @@
           </div>
 
           <div class="help-section">
+            <h3>Copyright notice</h3>
+            <p>A copyright acknowledgement dialog is shown once per browser session before the chat input is enabled. Documents and prompts may contain copyrighted material, and you remain responsible for ensuring that your use complies with applicable licenses. Prefer summaries, citations, and analysis over verbatim reproduction.</p>
+          </div>
+
+          <div class="help-section">
             <h3>Chat tab</h3>
             <p>The main chat interface. Send messages to the AI and it will draw on your uploaded documents as context (RAG — retrieval-augmented generation).</p>
             <table class="help-table">
@@ -424,6 +429,23 @@
       <div id="export-menu" class="export-menu" hidden>
         <button id="export-md-btn">Markdown (.md)</button>
         <button id="export-json-btn">JSON (.json)</button>
+      </div>
+
+      <!-- ── Copyright acknowledgement modal ── -->
+      <!-- Must be explicitly dismissed; backdrop click and ESC do not close it. -->
+      <div id="copyright-backdrop" class="modal-backdrop" hidden></div>
+      <div id="copyright-modal" class="modal copyright-modal" role="alertdialog"
+           aria-labelledby="copyright-title" aria-describedby="copyright-body" hidden>
+        <div class="modal-head">
+          <span class="modal-head-title" id="copyright-title">COPYRIGHT NOTICE</span>
+        </div>
+        <div class="modal-body" id="copyright-body">
+          <p>Documents and materials uploaded to or discussed within LanceLLMot may contain copyrighted content. You are responsible for ensuring that your use — including the queries you send and any output you rely on — complies with applicable copyright, licensing, and confidentiality obligations.</p>
+          <p>Prefer summaries, citations, and analysis over verbatim reproduction of third-party material.</p>
+        </div>
+        <div class="modal-foot" style="justify-content:flex-end">
+          <button class="wb-chat-btn" id="copyright-ack-btn">I Understand</button>
+        </div>
       </div>
 
       <!-- ── Status bar ── -->
