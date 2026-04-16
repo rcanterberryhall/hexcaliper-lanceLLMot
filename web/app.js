@@ -775,7 +775,11 @@ async function loadConversation(id) {
     setChatDocsVisible(true);
     await fetchChatDocuments();
     syncSpForConversation(conv);
-    input.focus();
+    if (chatDocList.children.length > 0) {
+      showCopyrightNotice();
+    } else {
+      input.focus();
+    }
   } catch (_) {}
 }
 
@@ -799,16 +803,12 @@ async function deleteConversation(id) {
 }
 
 // ── Copyright acknowledgement ─────────────────────────────────
-// Must be acknowledged once per browser session before a chat can be used.
-const COPYRIGHT_ACK_KEY = 'lancellmot_copyright_ack';
+// Shown on page load, on every newChat(), and whenever a conversation with
+// attached documents is opened — reminding the user of their obligations
+// before they act on potentially copyrighted material.
 const copyrightBackdrop = document.getElementById('copyright-backdrop');
 const copyrightModal    = document.getElementById('copyright-modal');
 const copyrightAckBtn   = document.getElementById('copyright-ack-btn');
-
-function copyrightAcknowledged() {
-  try { return sessionStorage.getItem(COPYRIGHT_ACK_KEY) === '1'; }
-  catch (_) { return false; }
-}
 
 function showCopyrightNotice() {
   copyrightBackdrop.hidden = false;
@@ -819,7 +819,6 @@ function showCopyrightNotice() {
 }
 
 function acknowledgeCopyright() {
-  try { sessionStorage.setItem(COPYRIGHT_ACK_KEY, '1'); } catch (_) {}
   copyrightBackdrop.hidden = true;
   copyrightModal.hidden    = true;
   input.disabled           = false;
@@ -829,7 +828,7 @@ function acknowledgeCopyright() {
 
 copyrightAckBtn.addEventListener('click', acknowledgeCopyright);
 
-if (!copyrightAcknowledged()) showCopyrightNotice();
+showCopyrightNotice();
 
 /**
  * Resets the UI to a blank new-chat state.
@@ -848,11 +847,7 @@ function newChat() {
   setActiveConvItem(null);
   setChatDocsVisible(false);
   syncSpForConversation(null);
-  if (!copyrightAcknowledged()) {
-    showCopyrightNotice();
-    return;
-  }
-  input.focus();
+  showCopyrightNotice();
 }
 
 newChatBtn.addEventListener('click', () => {
