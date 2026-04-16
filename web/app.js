@@ -1635,6 +1635,14 @@ const _WB_DOC_TYPE_OPTIONS = [
   ['app_note','App Note'], ['misc','Misc'],
 ];
 
+_WB_DOC_TYPE_OPTIONS.forEach(([v, l]) => {
+  const opt = document.createElement('option');
+  opt.value = v;
+  opt.textContent = l;
+  if (v === 'misc') opt.selected = true;
+  wbUploadType.appendChild(opt);
+});
+
 const _WB_SAFETY_CRITICAL_TYPES = ['theop', 'fmea', 'hazard_analysis', 'fat', 'sat'];
 const _WB_ALL_COMPLETENESS_TYPES = [
   'theop', 'fmea', 'hazard_analysis', 'fat', 'sat',
