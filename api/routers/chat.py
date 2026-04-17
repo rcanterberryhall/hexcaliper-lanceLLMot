@@ -110,6 +110,7 @@ async def chat(req: ChatRequest, request: Request):
         doc_chunks, doc_ids, chunk_ids, chunk_scores, chunk_anchors = await rag.search(
             user_email, req.message,
             scope_types=scope_types, scope_ids=scope_ids,
+            priority="chat",
         )
     except Exception as exc:
         log.exception("RAG vector search failed, proceeding without document context")

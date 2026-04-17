@@ -98,27 +98,38 @@ def chunk_text(text: str) -> list[str]:
 
 # ── Embedding ──────────────────────────────────────────────────
 
-async def embed(text: str) -> list[float]:
+async def embed(text: str, priority: Optional[str] = None) -> list[float]:
     """
     Generate a vector embedding for *text* using the Ollama embeddings API.
 
-    Routing: merLLM auto-classifies every ``/api/embeddings`` call into its
-    dedicated ``embeddings`` priority bucket regardless of any ``X-Priority``
-    header (merLLM#38). LanceLLMot's only responsibility is to tag the
-    request with ``X-Source: lancellmot`` so the merLLM dashboard can
-    attribute queue entries back to this app — that's all
-    :data:`config.EMBED_HEADERS` carries. Callers do not pick a priority
-    here and the function takes no header argument by design.
+    Routing: merLLM defaults every ``/api/embeddings`` call to its
+    dedicated ``embeddings`` priority bucket and only honors one
+    explicit override — ``X-Priority: chat`` routes the request to
+    ``chat`` so a chat-path RAG embed jumps ahead of ingest-chunk
+    embeds in the shared ``embeddings`` bucket (merLLM#58). LanceLLMot's
+    default stance is still "let merLLM decide" — the chat path opts in
+    by passing ``priority="chat"``; ingest keeps the default so bulk
+    chunk embeds stay in the ``embeddings`` bucket as before (merLLM#38).
 
     :param text: The text to embed.
     :type text: str
+    :param priority: Optional priority hint. When ``"chat"``, an
+        ``X-Priority: chat`` header is added for this request only —
+        the shared :data:`config.EMBED_HEADERS` dict is never mutated.
+        Any other value (including ``None``) sends the request with
+        source-tag only, landing it in merLLM's ``embeddings`` bucket.
+    :type priority: str | None
     :return: A list of floats representing the embedding vector.
     :rtype: list[float]
     :raises httpx.HTTPStatusError: If the Ollama API returns a non-2xx status.
     """
+    if priority == "chat":
+        headers = {**config.EMBED_HEADERS, "X-Priority": "chat"}
+    else:
+        headers = config.EMBED_HEADERS
     async with httpx.AsyncClient(
         timeout=120.0,
-        headers=config.EMBED_HEADERS,
+        headers=headers,
     ) as client:
         resp = await client.post(
             f"{config.OLLAMA_BASE_URL}/api/embeddings",
@@ -176,10 +187,11 @@ async def ingest(
 
     async def _bounded_embed(c: str) -> list[float]:
         async with sem:
-            # Routing is decided by merLLM: every /api/embeddings call lands
-            # in the dedicated embeddings bucket regardless of any header
-            # we send (merLLM#38). The semaphore here exists only to bound
-            # client-side concurrency to EMBED_CONCURRENCY.
+            # Ingest chunks stay in merLLM's default ``embeddings`` bucket —
+            # we deliberately don't pass ``priority`` here. Only the chat
+            # path opts into CHAT (merLLM#58 + lancellmot#38). The semaphore
+            # exists only to bound client-side concurrency to
+            # EMBED_CONCURRENCY.
             return await embed(c)
 
     # return_exceptions so one oversized chunk doesn't kill the whole upload —
@@ -408,6 +420,7 @@ async def search(
     top_k: int = TOP_K,
     scope_types: list[str] = None,
     scope_ids: list = None,
+    priority: Optional[str] = None,
 ) -> tuple[list[str], list[str], list[str], list[float], list[str]]:
     """
     Retrieve the most relevant document chunks for a query.
@@ -431,6 +444,12 @@ async def search(
     :param scope_ids: Parallel list of scope IDs corresponding to
         *scope_types*.  Use ``None`` for ``"global"`` entries.
     :type scope_ids: list | None
+    :param priority: Optional priority hint forwarded to :func:`embed`.
+        Chat callers pass ``"chat"`` so the query-vector embed routes
+        to merLLM's ``chat`` bucket and doesn't queue behind ingest-chunk
+        embeds (merLLM#58). Defaults to ``None`` → embed lands in the
+        ``embeddings`` bucket.
+    :type priority: str | None
     :return: A tuple of ``(text_chunks, doc_ids, chunk_ids, scores)`` for
         chunks that pass the distance threshold.  Scores are in [0, 1] with
         higher values indicating greater similarity. Anchors carry the
@@ -449,7 +468,7 @@ async def search(
     col = get_collection()
     if col.count() == 0:
         return [], [], [], [], []
-    query_emb = await embed(query)
+    query_emb = await embed(query, priority=priority)
 
     # Build the ChromaDB metadata filter.
     # Each (scope_type, scope_id) pair becomes one clause in a $or.
