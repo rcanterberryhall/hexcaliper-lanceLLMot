@@ -15,6 +15,7 @@ every in-flight job ID per tick, instead of one
 each job's lifetime — the client only gives up on a job if merLLM
 forgets it for BATCH_MISS_TOLERANCE consecutive polls (#48).
 """
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -399,3 +400,77 @@ async def test_extract_chunks_batch_empty_input_is_noop():
     # hit the real network. Returning immediately proves the early-out.
     results = await extractor.extract_chunks_batch([])
     assert results == []
+
+
+# ── Submit concurrency cap (#51) ─────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_extract_chunks_batch_caps_concurrent_submit_posts(monkeypatch):
+    """#51: concurrent POSTs to /api/batch/submit must be bounded by
+    EXTRACT_SUBMIT_CONCURRENCY. Parity with the embed path
+    (rag.py EMBED_CONCURRENCY = 4). Without the cap a single N-chunk
+    document fans out N simultaneous connections and can exhaust the
+    httpx pool — observed as 700+ simultaneous submits on a 703-chunk
+    reindex in 2026-04-19 telemetry.
+
+    The cap must guard **only** the submit call, not the full
+    _extract_one_via_batch (which also awaits the poll future). Wrapping
+    the whole function would re-introduce the client-side in-flight cap
+    removed by #48; merLLM owns a job's lifetime once submitted.
+    """
+    monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
+    monkeypatch.setattr(extractor, "EXTRACT_SUBMIT_CONCURRENCY", 3)
+
+    release = asyncio.Event()
+    state = {"in_flight": 0, "peak": 0, "submit_n": 0}
+
+    async def fake_post(url, json=None, **kw):
+        if url.endswith("/api/batch/submit"):
+            state["submit_n"] += 1
+            job_n = state["submit_n"]
+            state["in_flight"] += 1
+            state["peak"] = max(state["peak"], state["in_flight"])
+            # Hold the POST in-flight until the test releases; lets the
+            # peak observation stabilise against the cap, not against
+            # scheduling race.
+            await release.wait()
+            state["in_flight"] -= 1
+            return _mock_submit_response(f"job-{job_n}")
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([
+                {"id": f"job-{i}", "status": "completed",
+                 "result": _valid_extraction_json()}
+                for i in range(1, 21)
+            ])
+        raise AssertionError(f"unexpected POST {url}")
+
+    mock_client = _make_mock_client(fake_post)
+
+    with patch("extractor.httpx.AsyncClient", return_value=mock_client):
+        task = asyncio.create_task(
+            extractor.extract_chunks_batch(
+                [f"chunk-{i}" for i in range(20)],
+            )
+        )
+        # Yield the loop enough times for every would-be submitter to
+        # reach either fake_post (cap window) or the semaphore (held
+        # outside it). 50 ticks is comfortably past the ~20-task
+        # scheduling wave.
+        for _ in range(50):
+            await asyncio.sleep(0)
+
+        # The whole point: only EXTRACT_SUBMIT_CONCURRENCY POSTs may be
+        # in-flight at once, even though 20 chunks are racing to submit.
+        assert state["peak"] == 3, (
+            f"expected concurrent submit POSTs capped at 3, got "
+            f"{state['peak']} — submit semaphore missing or wrong scope"
+        )
+
+        release.set()
+        results = await task
+
+    # All 20 must still extract correctly once the cap releases; the
+    # semaphore must not drop or mis-order chunks.
+    assert len(results) == 20
+    assert all(not r.is_empty() for r in results)

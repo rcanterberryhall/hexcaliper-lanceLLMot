@@ -53,6 +53,18 @@ EXTRACT_TIMEOUT = float(config._get("EXTRACT_TIMEOUT_SECONDS", "120"))
 BATCH_SUBMIT_TIMEOUT = float(config._get("EXTRACT_BATCH_SUBMIT_TIMEOUT", "15"))
 BATCH_POLL_INTERVAL  = float(config._get("EXTRACT_BATCH_POLL_INTERVAL", "3"))
 
+# Cap on concurrent POSTs to merLLM's /api/batch/submit from a single
+# extract_chunks_batch call. Parity with rag.py's EMBED_CONCURRENCY=4,
+# but deliberately scoped to the submit POST only — *not* to the whole
+# _extract_one_via_batch — because wrapping the full function would cap
+# total in-flight jobs and re-introduce the client-side deadline removed
+# in #48. merLLM owns a job's lifetime once submitted; this cap exists
+# purely to keep the httpx connection pool and event-loop pressure
+# bounded on large-doc ingests (a 703-chunk doc used to fan out 703
+# simultaneous POSTs — see lancellmot#51). 8 is higher than the embed
+# cap because submit is a fast round-trip that doesn't wait on GPU.
+EXTRACT_SUBMIT_CONCURRENCY = int(config._get("EXTRACT_SUBMIT_CONCURRENCY", "8"))
+
 # merLLM owns the lifetime of every accepted batch job — its slot-watchdog
 # (_sweep_busy_timeouts) already reclaims wedged GPU slots, so the client
 # has no business timing out a job that's merely waiting in queue. The only
@@ -483,6 +495,7 @@ class _BatchPoller:
 async def _extract_one_via_batch(
     client: httpx.AsyncClient,
     poller: "_BatchPoller",
+    submit_sem: asyncio.Semaphore,
     chunk: str,
     system_prompt: str,
     doc_type: str,
@@ -495,7 +508,12 @@ async def _extract_one_via_batch(
     user_prompt = _build_user_prompt(chunk, doc_type)
     prompt = f"{system_prompt}\n\n{user_prompt}"
 
-    job_id = await _submit_extract_batch_job(client, prompt, model)
+    # Semaphore wraps only the submit POST — releasing as soon as merLLM
+    # has the job ID, so the subsequent ``await fut`` on the shared poller
+    # does not hold a slot. This is the #51 fix; wrapping the whole body
+    # would re-create the in-flight cap removed in #48.
+    async with submit_sem:
+        job_id = await _submit_extract_batch_job(client, prompt, model)
     if not job_id:
         return ExtractionResult()
 
@@ -551,6 +569,12 @@ async def extract_chunks_batch(
     m = model or _extract_model()
     system_prompt = _build_system_prompt(learned_vocab)
 
+    # Per-call cap on simultaneous submit POSTs; mirrors rag.py's embed
+    # path. Scope is the submit round-trip only — not the full chunk
+    # lifetime — so merLLM's queue still absorbs work in bulk while the
+    # httpx connection pool stays bounded regardless of doc size (#51).
+    submit_sem = asyncio.Semaphore(EXTRACT_SUBMIT_CONCURRENCY)
+
     # One httpx session for submit + the shared status poll — cheaper than
     # reopening a client per chunk, and still fully async.
     async with httpx.AsyncClient() as client:
@@ -559,7 +583,8 @@ async def extract_chunks_batch(
         try:
             tasks = [
                 _extract_one_via_batch(
-                    client, poller, chunk, system_prompt, doc_type, m,
+                    client, poller, submit_sem, chunk,
+                    system_prompt, doc_type, m,
                 )
                 for chunk in chunks
             ]
