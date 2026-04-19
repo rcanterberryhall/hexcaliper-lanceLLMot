@@ -9,9 +9,11 @@ dropped graph edges for every in-flight chunk. These tests pin the new
 submit → shared-poll → assemble contract and the fault-tolerance
 semantics.
 
-The poll path is shared: one ``GET /api/batch/status`` resolves every
-in-flight job's future, instead of one ``GET /api/batch/results/{id}``
-per chunk per tick (#40).
+The poll path is shared: one ``POST /api/batch/status-by-ids`` carries
+every in-flight job ID per tick, instead of one
+``GET /api/batch/results/{id}`` per chunk per tick (#40). merLLM owns
+each job's lifetime — the client only gives up on a job if merLLM
+forgets it for BATCH_MISS_TOLERANCE consecutive polls (#48).
 """
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -32,7 +34,7 @@ def _mock_submit_response(job_id: str = "job-abc"):
 
 
 def _mock_status_response(jobs: list[dict]):
-    """Mirror merLLM's ``GET /api/batch/status`` — list of job dicts."""
+    """Mirror merLLM's ``POST /api/batch/status-by-ids`` — list of job dicts."""
     r = MagicMock()
     r.status_code = 200
     r.raise_for_status = MagicMock()
@@ -50,13 +52,19 @@ def _valid_extraction_json() -> str:
     )
 
 
-def _make_mock_client(fake_post, fake_get):
-    """Build an AsyncClient stand-in that returns our fake responses."""
+def _make_mock_client(fake_post):
+    """Build an AsyncClient stand-in. Both submit and status-by-ids are
+    POSTs, so tests supply a single ``fake_post`` that routes by URL."""
     mock_client = AsyncMock()
     mock_client.__aenter__ = AsyncMock(return_value=mock_client)
     mock_client.__aexit__ = AsyncMock(return_value=False)
     mock_client.post = AsyncMock(side_effect=fake_post)
-    mock_client.get = AsyncMock(side_effect=fake_get)
+
+    async def _no_get(*a, **kw):
+        # Any GET would be a regression on the #40 fix (no per-job results
+        # polling) or the #48 refactor (status-by-ids is a POST).
+        raise AssertionError("extractor should not issue GETs in the batch path")
+    mock_client.get = AsyncMock(side_effect=_no_get)
     return mock_client
 
 
@@ -67,21 +75,21 @@ def _make_mock_client(fake_post, fake_get):
 async def test_extract_chunks_batch_submits_to_merllm_batch_endpoint(monkeypatch):
     """Every chunk must be POSTed to /api/batch/submit, not /api/chat."""
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
-    post_calls = []
+    submit_calls = []
 
     async def fake_post(url, json=None, timeout=None, **kw):
-        post_calls.append((url, json))
-        return _mock_submit_response(f"job-{len(post_calls)}")
+        if url.endswith("/api/batch/submit"):
+            submit_calls.append((url, json))
+            return _mock_submit_response(f"job-{len(submit_calls)}")
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([
+                {"id": f"job-{i}", "status": "completed",
+                 "result": _valid_extraction_json()}
+                for i in range(1, len(submit_calls) + 1)
+            ])
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, timeout=None, **kw):
-        # Every submitted job appears as completed on the first poll.
-        return _mock_status_response([
-            {"id": f"job-{i}", "status": "completed",
-             "result": _valid_extraction_json()}
-            for i in range(1, len(post_calls) + 1)
-        ])
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(
@@ -89,12 +97,12 @@ async def test_extract_chunks_batch_submits_to_merllm_batch_endpoint(monkeypatch
         )
 
     assert len(results) == 2
-    # Both calls hit the batch submit endpoint.
-    assert all(url.endswith("/api/batch/submit") for url, _ in post_calls)
+    # Both submit calls hit the batch submit endpoint.
+    assert all(url.endswith("/api/batch/submit") for url, _ in submit_calls)
     # Source tag is lancellmot so merLLM can attribute queue entries.
-    assert all(body["source_app"] == "lancellmot" for _, body in post_calls)
+    assert all(body["source_app"] == "lancellmot" for _, body in submit_calls)
     # Defensive options are populated so qwen3:* cannot wedge a slot.
-    for _, body in post_calls:
+    for _, body in submit_calls:
         assert body["options"]["think"] is False
         assert body["options"]["num_predict"] > 0
         assert body["options"]["num_ctx"] >= 8192
@@ -108,16 +116,17 @@ async def test_extract_chunks_batch_flattens_messages_into_single_prompt(monkeyp
     submitted = []
 
     async def fake_post(url, json=None, **kw):
-        submitted.append(json["prompt"])
-        return _mock_submit_response()
+        if url.endswith("/api/batch/submit"):
+            submitted.append(json["prompt"])
+            return _mock_submit_response()
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([
+                {"id": "job-abc", "status": "completed",
+                 "result": _valid_extraction_json()},
+            ])
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, **kw):
-        return _mock_status_response([
-            {"id": "job-abc", "status": "completed",
-             "result": _valid_extraction_json()},
-        ])
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         await extractor.extract_chunks_batch(["tell me about SIL 2"], doc_type="theop")
@@ -138,75 +147,100 @@ async def test_extract_chunks_batch_polls_until_complete(monkeypatch):
     """A queued/running status must not end the poll; we keep polling until
     the job flips to completed."""
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
-    get_count = {"n": 0}
+    poll_count = {"n": 0}
 
     async def fake_post(url, json=None, **kw):
-        return _mock_submit_response("job-abc")
-
-    async def fake_get(url, **kw):
-        get_count["n"] += 1
-        if get_count["n"] == 1:
+        if url.endswith("/api/batch/submit"):
+            return _mock_submit_response("job-abc")
+        if url.endswith("/api/batch/status-by-ids"):
+            poll_count["n"] += 1
+            if poll_count["n"] == 1:
+                return _mock_status_response([
+                    {"id": "job-abc", "status": "queued", "result": None},
+                ])
+            if poll_count["n"] == 2:
+                return _mock_status_response([
+                    {"id": "job-abc", "status": "running", "result": None},
+                ])
             return _mock_status_response([
-                {"id": "job-abc", "status": "queued", "result": None},
+                {"id": "job-abc", "status": "completed",
+                 "result": _valid_extraction_json()},
             ])
-        if get_count["n"] == 2:
-            return _mock_status_response([
-                {"id": "job-abc", "status": "running", "result": None},
-            ])
-        return _mock_status_response([
-            {"id": "job-abc", "status": "completed",
-             "result": _valid_extraction_json()},
-        ])
+        raise AssertionError(f"unexpected POST {url}")
 
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["only chunk"])
 
     assert len(results) == 1
     assert results[0].concepts == ["safety integrity level"]
-    assert get_count["n"] >= 3  # polled through queued + running before completed
+    assert poll_count["n"] >= 3  # polled through queued + running before completed
 
 
 @pytest.mark.asyncio
 async def test_extract_chunks_batch_shared_poll_is_one_request_per_tick(monkeypatch):
     """Regardless of concurrency, the poll path must issue exactly one
-    ``GET /api/batch/status`` per tick — not one per chunk (#40)."""
+    ``POST /api/batch/status-by-ids`` per tick — not one per chunk (#40)."""
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
-    status_calls = []
-    result_calls = []
     submit_n = {"n": 0}
+    status_calls = []
 
     async def fake_post(url, json=None, **kw):
-        # 5 submits → 5 job ids.
-        submit_n["n"] += 1
-        return _mock_submit_response(f"job-{submit_n['n']}")
-
-    async def fake_get(url, **kw):
-        if url.endswith("/api/batch/status"):
-            status_calls.append(url)
+        if url.endswith("/api/batch/submit"):
+            submit_n["n"] += 1
+            return _mock_submit_response(f"job-{submit_n['n']}")
+        if url.endswith("/api/batch/status-by-ids"):
+            status_calls.append(json.get("ids") if json else None)
             return _mock_status_response([
                 {"id": f"job-{i}", "status": "completed",
                  "result": _valid_extraction_json()}
                 for i in range(1, 6)
             ])
-        # Any per-job GET would land here — a regression on the #40 fix.
-        result_calls.append(url)
-        return _mock_status_response([])
+        raise AssertionError(f"unexpected POST {url}")
 
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["a", "b", "c", "d", "e"])
 
     assert len(results) == 5
     assert all(not r.is_empty() for r in results)
-    # No per-job results endpoint calls — the shared /api/batch/status
-    # response already carries the result text.
-    assert result_calls == []
     # Every chunk resolved from a small, bounded number of shared polls —
     # emphatically not one poll per chunk per tick.
     assert len(status_calls) <= 3
+
+
+@pytest.mark.asyncio
+async def test_extract_chunks_batch_poll_sends_all_pending_ids(monkeypatch):
+    """Each shared poll must include every still-pending job ID in the
+    status-by-ids body — omitting one would silently hang that chunk."""
+    monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
+    submit_n = {"n": 0}
+    seen_ids_per_poll: list[set[str]] = []
+
+    async def fake_post(url, json=None, **kw):
+        if url.endswith("/api/batch/submit"):
+            submit_n["n"] += 1
+            return _mock_submit_response(f"job-{submit_n['n']}")
+        if url.endswith("/api/batch/status-by-ids"):
+            seen_ids_per_poll.append(set(json["ids"]))
+            return _mock_status_response([
+                {"id": f"job-{i}", "status": "completed",
+                 "result": _valid_extraction_json()}
+                for i in range(1, 4)
+            ])
+        raise AssertionError(f"unexpected POST {url}")
+
+    mock_client = _make_mock_client(fake_post)
+
+    with patch("extractor.httpx.AsyncClient", return_value=mock_client):
+        await extractor.extract_chunks_batch(["a", "b", "c"])
+
+    # The first poll that occurred after all 3 submits landed must have
+    # carried every ID.
+    expected = {"job-1", "job-2", "job-3"}
+    assert any(expected.issubset(ids) for ids in seen_ids_per_poll)
 
 
 # ── Fault tolerance — every failure mode returns empty, not an exception ────
@@ -219,12 +253,13 @@ async def test_extract_chunks_batch_submit_failure_yields_empty(monkeypatch):
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
 
     async def fake_post(url, **kw):
-        raise RuntimeError("merLLM unreachable")
+        if url.endswith("/api/batch/submit"):
+            raise RuntimeError("merLLM unreachable")
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([])
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, **kw):
-        return _mock_status_response([])
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["chunk"])
@@ -240,15 +275,16 @@ async def test_extract_chunks_batch_merllm_reported_failure_yields_empty(monkeyp
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
 
     async def fake_post(url, **kw):
-        return _mock_submit_response("job-abc")
+        if url.endswith("/api/batch/submit"):
+            return _mock_submit_response("job-abc")
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([
+                {"id": "job-abc", "status": "failed", "result": None,
+                 "error": "slot died"},
+            ])
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, **kw):
-        return _mock_status_response([
-            {"id": "job-abc", "status": "failed", "result": None,
-             "error": "slot died"},
-        ])
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["chunk"])
@@ -258,26 +294,68 @@ async def test_extract_chunks_batch_merllm_reported_failure_yields_empty(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_extract_chunks_batch_missing_job_times_out_to_empty(monkeypatch):
-    """If a job never shows up in /api/batch/status (DB wipe, or pushed out
-    of the 200-window), the per-chunk deadline eventually returns empty —
-    no hang."""
+async def test_extract_chunks_batch_missing_job_gives_up_after_miss_tolerance(
+        monkeypatch):
+    """If merLLM consistently reports the job as unknown (manual drain, DB
+    wipe) the poller gives up after BATCH_MISS_TOLERANCE polls — no hang.
+    Unlike the old wall-clock deadline, a queued-but-known job is never
+    abandoned."""
     monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
-    monkeypatch.setattr(extractor, "BATCH_POLL_MAX_SECONDS", 0.05)
+    monkeypatch.setattr(extractor, "BATCH_MISS_TOLERANCE", 3)
+    poll_count = {"n": 0}
 
     async def fake_post(url, **kw):
-        return _mock_submit_response("job-missing")
+        if url.endswith("/api/batch/submit"):
+            return _mock_submit_response("job-missing")
+        if url.endswith("/api/batch/status-by-ids"):
+            poll_count["n"] += 1
+            return _mock_status_response([])  # never returned by merLLM
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, **kw):
-        return _mock_status_response([])  # our job never appears
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["chunk"])
 
     assert len(results) == 1
     assert results[0].is_empty()
+    assert poll_count["n"] >= 3  # took at least BATCH_MISS_TOLERANCE misses
+
+
+@pytest.mark.asyncio
+async def test_extract_chunks_batch_does_not_give_up_while_job_is_queued(
+        monkeypatch):
+    """A job that stays ``queued`` for many polls must not be abandoned —
+    merLLM owns the lifetime. Proves there's no client-side wall-clock
+    deadline anymore (the defining bug behind #48)."""
+    monkeypatch.setattr(extractor, "BATCH_POLL_INTERVAL", 0.0)
+    monkeypatch.setattr(extractor, "BATCH_MISS_TOLERANCE", 3)
+    poll_count = {"n": 0}
+
+    async def fake_post(url, **kw):
+        if url.endswith("/api/batch/submit"):
+            return _mock_submit_response("job-slow")
+        if url.endswith("/api/batch/status-by-ids"):
+            poll_count["n"] += 1
+            # Stay queued for 10 polls (4× miss-tolerance), then complete.
+            if poll_count["n"] < 10:
+                return _mock_status_response([
+                    {"id": "job-slow", "status": "queued", "result": None},
+                ])
+            return _mock_status_response([
+                {"id": "job-slow", "status": "completed",
+                 "result": _valid_extraction_json()},
+            ])
+        raise AssertionError(f"unexpected POST {url}")
+
+    mock_client = _make_mock_client(fake_post)
+
+    with patch("extractor.httpx.AsyncClient", return_value=mock_client):
+        results = await extractor.extract_chunks_batch(["chunk"])
+
+    assert len(results) == 1
+    assert not results[0].is_empty()
+    assert poll_count["n"] >= 10
 
 
 @pytest.mark.asyncio
@@ -289,20 +367,21 @@ async def test_extract_chunks_batch_preserves_slot_order_under_partial_failure(
     submit_n = {"n": 0}
 
     async def fake_post(url, json=None, **kw):
-        submit_n["n"] += 1
-        if submit_n["n"] == 2:
-            raise RuntimeError("simulated submit failure on chunk 2")
-        return _mock_submit_response(f"job-{submit_n['n']}")
+        if url.endswith("/api/batch/submit"):
+            submit_n["n"] += 1
+            if submit_n["n"] == 2:
+                raise RuntimeError("simulated submit failure on chunk 2")
+            return _mock_submit_response(f"job-{submit_n['n']}")
+        if url.endswith("/api/batch/status-by-ids"):
+            return _mock_status_response([
+                {"id": "job-1", "status": "completed",
+                 "result": _valid_extraction_json()},
+                {"id": "job-3", "status": "completed",
+                 "result": _valid_extraction_json()},
+            ])
+        raise AssertionError(f"unexpected POST {url}")
 
-    async def fake_get(url, **kw):
-        return _mock_status_response([
-            {"id": "job-1", "status": "completed",
-             "result": _valid_extraction_json()},
-            {"id": "job-3", "status": "completed",
-             "result": _valid_extraction_json()},
-        ])
-
-    mock_client = _make_mock_client(fake_post, fake_get)
+    mock_client = _make_mock_client(fake_post)
 
     with patch("extractor.httpx.AsyncClient", return_value=mock_client):
         results = await extractor.extract_chunks_batch(["a", "b", "c"])

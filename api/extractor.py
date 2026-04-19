@@ -52,11 +52,17 @@ EXTRACT_TIMEOUT = float(config._get("EXTRACT_TIMEOUT_SECONDS", "120"))
 # silently drops graph edges for half a document.
 BATCH_SUBMIT_TIMEOUT = float(config._get("EXTRACT_BATCH_SUBMIT_TIMEOUT", "15"))
 BATCH_POLL_INTERVAL  = float(config._get("EXTRACT_BATCH_POLL_INTERVAL", "3"))
-# Overall wall-clock cap per chunk while polling for a result. qwen3:32b on a
-# P40 returns in well under a minute at BACKGROUND priority when the queue is
-# warm; 15 min is a generous ceiling that tolerates queue pile-ups without
-# letting a runaway poll leak forever.
-BATCH_POLL_MAX_SECONDS = float(config._get("EXTRACT_BATCH_POLL_MAX_SECONDS", "900"))
+
+# merLLM owns the lifetime of every accepted batch job — its slot-watchdog
+# (_sweep_busy_timeouts) already reclaims wedged GPU slots, so the client
+# has no business timing out a job that's merely waiting in queue. The only
+# legitimate "give up" signal is that merLLM no longer recognises the job
+# ID, meaning the row was manually drained / DB wiped / lost to a
+# downgrade. We detect that by asking for status-by-ids and counting
+# consecutive misses per job. /api/batch/submit writes the DB row before
+# returning the ID, so a miss on the very next poll is already suspicious;
+# 5 gives generous headroom against any transient DB-read anomaly.
+BATCH_MISS_TOLERANCE = int(config._get("EXTRACT_BATCH_MISS_TOLERANCE", "5"))
 
 # Cap on *learned* vocab entries fed into the system prompt on top of the
 # seeded CONCEPT_VOCAB. The learned set grows unbounded as documents are
@@ -381,34 +387,37 @@ class _BatchPoller:
     """
     Shared batch-job poller for one ``extract_chunks_batch`` run.
 
-    One task issues ``GET /api/batch/status`` every BATCH_POLL_INTERVAL and
-    resolves per-job futures as each job reaches a terminal state. Replaces
-    the prior per-chunk poll loop that issued N concurrent
+    One task issues ``POST /api/batch/status-by-ids`` every
+    BATCH_POLL_INTERVAL, passing the full set of still-pending job IDs,
+    and resolves per-job futures as each job reaches a terminal state.
+    Replaces the prior per-chunk poll loop that issued N concurrent
     ``GET /api/batch/results/{id}`` calls — on a 100-chunk ingest merLLM
     saw ~100 requests every 3 s, almost all returning 409 "still running"
     (#40).
 
-    The status endpoint already contains ``result`` inline for completed
-    jobs, so no follow-up per-job GET is needed. It returns the 200
-    most-recent jobs (ordered by submitted_at DESC), which covers a typical
-    single-document extraction. If a job we just submitted isn't in the
-    response yet (rare — only possible if 200+ newer jobs landed in the
-    window), we simply keep waiting; the per-chunk BATCH_POLL_MAX_SECONDS
-    deadline is still the safety net.
+    status-by-ids is explicitly scoped to our in-flight IDs, so it is
+    immune to the 200-row LIMIT on ``GET /api/batch/status`` — a
+    concurrent ingest from another client can no longer push our jobs
+    out of visibility. merLLM owns the job's lifetime; we only declare a
+    job lost if it drops out of merLLM's DB entirely for
+    ``BATCH_MISS_TOLERANCE`` consecutive polls (manual drain, DB wipe).
     """
 
     def __init__(self, client: httpx.AsyncClient):
         self._client  = client
         self._pending: dict[str, asyncio.Future[str | None]] = {}
+        self._misses:  dict[str, int] = {}
         self._stopped = False
 
     def register(self, job_id: str) -> asyncio.Future[str | None]:
         fut = asyncio.get_running_loop().create_future()
         self._pending[job_id] = fut
+        self._misses[job_id] = 0
         return fut
 
-    def unregister(self, job_id: str) -> None:
+    def _drop(self, job_id: str) -> None:
         self._pending.pop(job_id, None)
+        self._misses.pop(job_id, None)
 
     def stop(self) -> None:
         self._stopped = True
@@ -421,9 +430,11 @@ class _BatchPoller:
             if not self._pending:
                 continue
 
+            ids = list(self._pending.keys())
             try:
-                resp = await self._client.get(
-                    f"{config.MERLLM_URL}/api/batch/status",
+                resp = await self._client.post(
+                    f"{config.MERLLM_URL}/api/batch/status-by-ids",
+                    json={"ids": ids},
                     timeout=BATCH_SUBMIT_TIMEOUT,
                 )
                 resp.raise_for_status()
@@ -436,29 +447,37 @@ class _BatchPoller:
                 continue
 
             by_id = {j.get("id"): j for j in jobs if j.get("id")}
-            for job_id in list(self._pending.keys()):
-                rec = by_id.get(job_id)
-                if rec is None:
-                    # Job not in the 200-most-recent window yet (or bumped
-                    # out by a very busy queue). Keep waiting — the
-                    # per-chunk deadline will eventually give up.
-                    continue
+            for job_id in ids:
                 fut = self._pending.get(job_id)
                 if fut is None or fut.done():
                     continue
+                rec = by_id.get(job_id)
+                if rec is None:
+                    self._misses[job_id] = self._misses.get(job_id, 0) + 1
+                    if self._misses[job_id] >= BATCH_MISS_TOLERANCE:
+                        logger.warning(
+                            "extractor: batch job %s missing from merLLM "
+                            "after %d consecutive polls — giving up",
+                            job_id[:8], self._misses[job_id],
+                        )
+                        fut.set_result(None)
+                        self._drop(job_id)
+                    continue
 
+                # Job present → reset miss counter and check status.
+                self._misses[job_id] = 0
                 status = rec.get("status")
                 if status == "completed":
                     fut.set_result(rec.get("result") or "")
-                    self._pending.pop(job_id, None)
+                    self._drop(job_id)
                 elif status in ("failed", "cancelled"):
                     logger.warning(
                         "extractor: batch job %s reached terminal state %s",
                         job_id[:8], status,
                     )
                     fut.set_result(None)
-                    self._pending.pop(job_id, None)
-                # else queued / running — keep waiting.
+                    self._drop(job_id)
+                # else queued / running — keep waiting indefinitely.
 
 
 async def _extract_one_via_batch(
@@ -481,15 +500,10 @@ async def _extract_one_via_batch(
         return ExtractionResult()
 
     fut = poller.register(job_id)
-    try:
-        response_text = await asyncio.wait_for(fut, BATCH_POLL_MAX_SECONDS)
-    except asyncio.TimeoutError:
-        poller.unregister(job_id)
-        logger.warning(
-            "extractor: batch job %s still not complete after %.0fs — giving up",
-            job_id[:8], BATCH_POLL_MAX_SECONDS,
-        )
-        return ExtractionResult()
+    # No wall-clock deadline: merLLM owns the job's lifetime. The poller
+    # resolves the future only when merLLM reports a terminal status or
+    # forgets the job (BATCH_MISS_TOLERANCE misses in a row).
+    response_text = await fut
 
     if not response_text:
         return ExtractionResult()
@@ -544,7 +558,9 @@ async def extract_chunks_batch(
         poller_task = asyncio.create_task(poller.run())
         try:
             tasks = [
-                _extract_one_via_batch(client, poller, chunk, system_prompt, doc_type, m)
+                _extract_one_via_batch(
+                    client, poller, chunk, system_prompt, doc_type, m,
+                )
                 for chunk in chunks
             ]
             results = await asyncio.gather(*tasks, return_exceptions=True)
