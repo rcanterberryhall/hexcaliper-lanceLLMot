@@ -1286,11 +1286,17 @@ async function pollMerllm() {
     const anyFaulted = Object.values(gpus).some(g => g.health === 'faulted');
     const health = allHealthy ? 'healthy' : anyFaulted ? 'faulted' : 'degraded';
     dot.className = 'merllm-dot ' + health;
-    const queued   = d.queue?.total ?? 0;
-    const inflight = d.queue?.in_flight ?? 0;
-    const active   = queued + inflight;
-    label.textContent = 'merLLM' + (active > 0 ? ` (${active})` : '');
-    label.title = `Routing: ${d.routing || 'round_robin'}` + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
+    // Show active/queued as two separate numbers so the user can see queue
+    // depth even when both GPUs are saturated. "active" = jobs on a GPU
+    // right now; "queued" = jobs waiting in merLLM's SQLite queue. Prior
+    // build summed the two, which made a 435-deep backlog indistinguishable
+    // from a quiet system with 2 in flight.
+    const active = d.queue?.running ?? 0;
+    const queued = d.queue?.queued  ?? 0;
+    const badge  = (active > 0 || queued > 0) ? ` (${active}/${queued})` : '';
+    label.textContent = 'merLLM' + badge;
+    const tip = `Active ${active} / Queued ${queued} — routing: ${d.routing || 'round_robin'}`;
+    label.title = tip + (d.warnings?.length ? '\n⚠ ' + d.warnings.join('\n⚠ ') : '');
     if (d.warnings?.length) {
       dot.style.boxShadow = '0 0 0 2px rgba(210,153,34,.4)';
     } else {
