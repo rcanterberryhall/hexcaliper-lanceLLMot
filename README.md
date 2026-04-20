@@ -419,7 +419,8 @@ Interactive docs: `http://localhost:8000/docs`
 | `POST` | `/documents` | Upload a document (returns once chunks are embedded and searchable; summary, copyright notices, and concept-graph indexing finish asynchronously in the background) |
 | `PATCH` | `/documents/{id}` | Edit document attributes (filename, doc_type, classification) |
 | `DELETE` | `/documents/{id}` | Delete a document |
-| `POST` | `/documents/reindex` | Re-run concept extraction on all documents |
+| `POST` | `/documents/reindex` | Kick off a background reindex run; returns a `run_id` immediately. Idempotent per user — a second call while a run is active returns the same `run_id`. |
+| `GET` | `/documents/reindex/status` | Progress for a reindex run. With `?run_id=…` returns that exact run; without, returns the calling user's most recent run. |
 
 ### Workspace (Clients & Projects)
 

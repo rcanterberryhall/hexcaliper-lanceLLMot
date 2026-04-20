@@ -47,6 +47,21 @@ def active_upload_snapshot() -> list[dict]:
     )
 
 
+# ── Reindex run tracking ──────────────────────────────────────────────────────
+# Maps run_id → run state (see _new_reindex_run for shape). Single async event
+# loop — no lock needed. State is in-memory; a process restart drops history,
+# matching the issue's scope decision (a killed reindex was already
+# unrecoverable, so persistence buys nothing here).
+_reindex_runs:    dict[str, dict] = {}
+_user_active_run: dict[str, str]  = {}     # user_email → run_id, while running
+
+# Rolling window for ETA: keep at most this many (timestamp, chunks_done)
+# samples per run, dropping anything older than RATE_WINDOW_SEC. Two minutes
+# of samples is enough to smooth one merLLM batch's worth of completions.
+RATE_WINDOW_SEC   = 120.0
+RATE_MAX_SAMPLES  = 60
+
+
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -464,15 +479,176 @@ async def delete_document(doc_id: str, request: Request):
     return Response(status_code=204)
 
 
+def _reindex_public_view(state: dict) -> dict:
+    """Strip task handle / internal samples before serializing to the client."""
+    eta = _reindex_eta_seconds(state)
+    return {
+        "run_id":           state["run_id"],
+        "status":           state["status"],
+        "started_at":       state["started_at"],
+        "completed_at":     state.get("completed_at"),
+        "scope":            state["scope"],
+        "docs_total":       state["docs_total"],
+        "docs_done":        state["docs_done"],
+        "chunks_total":     state["chunks_total"],
+        "chunks_done":      state["chunks_done"],
+        "current_doc":      state.get("current_doc"),
+        "eta_seconds":      eta,
+        "error":            state.get("error"),
+    }
+
+
+def _reindex_eta_seconds(state: dict) -> Optional[int]:
+    """Best-effort ETA from the rolling rate window. Returns None until enough
+    samples are collected or once the run has stopped."""
+    if state["status"] != "running":
+        return None
+    samples = state.get("rate_samples") or []
+    if len(samples) < 2:
+        return None
+    chunks_remaining = state["chunks_total"] - state["chunks_done"]
+    if chunks_remaining <= 0:
+        return 0
+    t0, c0 = samples[0]
+    t1, c1 = samples[-1]
+    elapsed = t1 - t0
+    delta   = c1 - c0
+    if elapsed <= 0 or delta <= 0:
+        return None
+    rate = delta / elapsed                  # chunks per second
+    return int(chunks_remaining / rate)
+
+
+def _record_progress_sample(state: dict) -> None:
+    """Append a (timestamp, chunks_done) sample, prune entries older than the
+    rolling window. Called every time chunks_done advances."""
+    now = time.time()
+    samples = state.setdefault("rate_samples", [])
+    samples.append((now, state["chunks_done"]))
+    cutoff = now - RATE_WINDOW_SEC
+    while samples and samples[0][0] < cutoff:
+        samples.pop(0)
+    if len(samples) > RATE_MAX_SAMPLES:
+        del samples[: len(samples) - RATE_MAX_SAMPLES]
+
+
+async def _perform_reindex(run_id: str, user_email: str,
+                           project_id: Optional[str],
+                           client_id:  Optional[str]) -> None:
+    """Background worker for one reindex run. Updates _reindex_runs[run_id]
+    in place; never raises (errors are recorded on the state)."""
+    state = _reindex_runs[run_id]
+    try:
+        with db.lock:
+            if project_id:
+                docs = db.list_documents_for_scope(user_email, ["project"], [project_id])
+            elif client_id:
+                docs = db.list_documents_for_scope(user_email, ["client"], [client_id])
+            else:
+                docs = db.list_all_documents(user_email)
+
+        # Pre-scan chunk counts so the progress bar shows a stable denominator
+        # from the first poll. ChromaDB lookup is cheap relative to extraction.
+        chunks_by_doc: dict[str, list[tuple[str, str]]] = {
+            doc["id"]: list(rag.get_doc_chunks(doc["id"])) for doc in docs
+        }
+        state["docs_total"]   = len(docs)
+        state["chunks_total"] = sum(len(v) for v in chunks_by_doc.values())
+        _record_progress_sample(state)
+
+        for doc in docs:
+            doc_id     = doc["id"]
+            scope_type = doc.get("scope_type", "global")
+            scope_id   = doc.get("scope_id") or None
+            doc_type   = doc.get("doc_type", "")
+
+            chunk_pairs       = chunks_by_doc[doc_id]
+            chunk_ids_for_doc = [cid for cid, _ in chunk_pairs]
+            chunk_texts       = [text for _, text in chunk_pairs]
+
+            state["current_doc"] = {
+                "id":           doc_id,
+                "title":        doc.get("filename", doc_id),
+                "chunks_total": len(chunk_pairs),
+                "chunks_done":  0,
+            }
+
+            # Build scoped vocabulary — same hierarchy as ingest().
+            vocab_scope_types: list[str]        = ["global"]
+            vocab_scope_ids:   list[Optional[str]] = [None]
+            if scope_type == "client" and scope_id:
+                vocab_scope_types.append("client")
+                vocab_scope_ids.append(scope_id)
+            elif scope_type == "project" and scope_id:
+                vocab_scope_types.append("project")
+                vocab_scope_ids.append(scope_id)
+                proj = db.get_project(scope_id)
+                if proj and proj.get("client_id"):
+                    vocab_scope_types.append("client")
+                    vocab_scope_ids.append(proj["client_id"])
+            elif scope_type == "session" and scope_id:
+                vocab_scope_types.append("session")
+                vocab_scope_ids.append(scope_id)
+
+            with db.lock:
+                learned_vocab = db.list_concept_vocab(
+                    vocab_scope_types, vocab_scope_ids, limit=extractor.MAX_LEARNED_VOCAB,
+                )
+
+            # Routes through merLLM's durable batch queue (hexcaliper#29) so
+            # an mid-reindex restart resumes instead of truncating the graph.
+            results = await extractor.extract_chunks_batch(
+                chunk_texts, doc_type=doc_type, learned_vocab=learned_vocab,
+            )
+            for chunk_id, result in zip(chunk_ids_for_doc, results):
+                if not result.is_empty():
+                    graph.index_chunk_concepts(
+                        chunk_id,
+                        concepts=result.concepts,
+                        entities=result.entities,
+                        doc_role=result.doc_role,
+                        key_assertion=result.key_assertion,
+                        scope_type=scope_type,
+                        scope_id=scope_id,
+                    )
+                state["chunks_done"] += 1
+                state["current_doc"]["chunks_done"] += 1
+
+            state["docs_done"] += 1
+            _record_progress_sample(state)
+
+        state["status"]       = "completed"
+        state["completed_at"] = _now_iso()
+        state["current_doc"]  = None
+    except Exception as exc:
+        log.exception("reindex run %s failed", run_id)
+        state["status"]       = "failed"
+        state["error"]        = f"{type(exc).__name__}: {exc}"
+        state["completed_at"] = _now_iso()
+    finally:
+        # Free the per-user idempotency slot whether we succeeded or failed,
+        # so the user can retry without restarting the process.
+        if _user_active_run.get(user_email) == run_id:
+            _user_active_run.pop(user_email, None)
+
+
 @router.post("/documents/reindex")
 async def reindex_documents(
-    request:    Request,
-    project_id: Optional[str] = None,
-    client_id:  Optional[str] = None,
+    request:          Request,
+    background_tasks: BackgroundTasks,
+    project_id:       Optional[str] = None,
+    client_id:        Optional[str] = None,
 ):
     """
-    Re-run concept extraction on all existing document chunks using the current
-    vocabulary, back-propagating newly learned keywords to older documents.
+    Kick off concept-extraction reindex as a background task and return
+    immediately with a ``run_id``. Poll ``GET /documents/reindex/status?run_id=…``
+    for progress.
+
+    Idempotent per user — if a run is already active for this user, the
+    existing ``run_id`` is returned and no second run is started. The
+    ``project_id`` / ``client_id`` filters of the existing run are NOT
+    overridden by a second call; cancel + retry would be needed for that
+    (out of scope for v1).
 
     Without query params: reindexes all documents owned by this user.
     With ``project_id``: only that project's documents.
@@ -480,72 +656,68 @@ async def reindex_documents(
     """
     user_email = _user(request)
 
-    with db.lock:
-        if project_id:
-            docs = db.list_documents_for_scope(user_email, ["project"], [project_id])
-        elif client_id:
-            docs = db.list_documents_for_scope(user_email, ["client"], [client_id])
-        else:
-            docs = db.list_all_documents(user_email)
+    existing_run_id = _user_active_run.get(user_email)
+    if existing_run_id and existing_run_id in _reindex_runs:
+        return _reindex_public_view(_reindex_runs[existing_run_id])
 
-    docs_processed   = 0
-    chunks_processed = 0
+    run_id = str(uuid.uuid4())
+    state  = {
+        "run_id":       run_id,
+        "user_email":   user_email,
+        "status":       "running",
+        "started_at":   _now_iso(),
+        "completed_at": None,
+        "scope": {
+            "project_id": project_id,
+            "client_id":  client_id,
+        },
+        "docs_total":   0,
+        "docs_done":    0,
+        "chunks_total": 0,
+        "chunks_done":  0,
+        "current_doc":  None,
+        "rate_samples": [],
+        "error":        None,
+    }
+    _reindex_runs[run_id]      = state
+    _user_active_run[user_email] = run_id
 
-    for doc in docs:
-        doc_id     = doc["id"]
-        scope_type = doc.get("scope_type", "global")
-        scope_id   = doc.get("scope_id") or None
-        doc_type   = doc.get("doc_type", "")
+    background_tasks.add_task(_perform_reindex, run_id, user_email, project_id, client_id)
 
-        # Build scoped vocabulary — same hierarchy as ingest().
-        vocab_scope_types: list[str]        = ["global"]
-        vocab_scope_ids:   list[Optional[str]] = [None]
-        if scope_type == "client" and scope_id:
-            vocab_scope_types.append("client")
-            vocab_scope_ids.append(scope_id)
-        elif scope_type == "project" and scope_id:
-            vocab_scope_types.append("project")
-            vocab_scope_ids.append(scope_id)
-            proj = db.get_project(scope_id)
-            if proj and proj.get("client_id"):
-                vocab_scope_types.append("client")
-                vocab_scope_ids.append(proj["client_id"])
-        elif scope_type == "session" and scope_id:
-            vocab_scope_types.append("session")
-            vocab_scope_ids.append(scope_id)
+    return _reindex_public_view(state)
 
-        with db.lock:
-            learned_vocab = db.list_concept_vocab(
-                vocab_scope_types, vocab_scope_ids, limit=extractor.MAX_LEARNED_VOCAB,
-            )
 
-        # Collect all chunks for the doc, then route the extraction through
-        # merLLM's durable batch queue (hexcaliper#29). A restart mid-reindex
-        # used to silently truncate the concept graph for every document
-        # still being processed — the batch path persists each chunk in
-        # merLLM's SQLite so it resumes after restart instead.
-        chunk_pairs       = list(rag.get_doc_chunks(doc_id))
-        chunk_ids_for_doc = [cid for cid, _ in chunk_pairs]
-        chunk_texts       = [text for _, text in chunk_pairs]
-        results           = await extractor.extract_chunks_batch(
-            chunk_texts, doc_type=doc_type, learned_vocab=learned_vocab,
-        )
-        for chunk_id, result in zip(chunk_ids_for_doc, results):
-            if not result.is_empty():
-                graph.index_chunk_concepts(
-                    chunk_id,
-                    concepts=result.concepts,
-                    entities=result.entities,
-                    doc_role=result.doc_role,
-                    key_assertion=result.key_assertion,
-                    scope_type=scope_type,
-                    scope_id=scope_id,
-                )
-            chunks_processed += 1
+@router.get("/documents/reindex/status")
+async def reindex_status(
+    request: Request,
+    run_id:  Optional[str] = None,
+):
+    """
+    Return progress for a reindex run. With ``run_id``: that exact run.
+    Without: the calling user's most recent run (active or last finished).
+    Returns 404 if neither exists.
+    """
+    user_email = _user(request)
 
-        docs_processed += 1
+    if run_id is None:
+        run_id = _user_active_run.get(user_email)
+        if not run_id:
+            # Fall back to the most recent finished run for this user, so a
+            # client that polls just after completion still sees the result.
+            user_runs = [s for s in _reindex_runs.values()
+                         if s.get("user_email") == user_email]
+            if not user_runs:
+                raise HTTPException(status_code=404, detail="No reindex runs for user.")
+            user_runs.sort(key=lambda s: s["started_at"], reverse=True)
+            run_id = user_runs[0]["run_id"]
 
-    return {"ok": True, "docs_reindexed": docs_processed, "chunks_processed": chunks_processed}
+    state = _reindex_runs.get(run_id)
+    if not state:
+        raise HTTPException(status_code=404, detail="Unknown run_id.")
+    if state.get("user_email") != user_email:
+        # Don't leak run state across users.
+        raise HTTPException(status_code=404, detail="Unknown run_id.")
+    return _reindex_public_view(state)
 
 
 @router.post("/documents/migrate-concept-scope")

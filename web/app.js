@@ -2393,28 +2393,120 @@ const wbReindexAllBtn     = document.getElementById('wb-reindex-all-btn');
 const wbMigrateScopeBtn   = document.getElementById('wb-migrate-scope-btn');
 const wbMaintenanceStatus = document.getElementById('wb-maintenance-status');
 
+const REINDEX_POLL_MS = 3000;
+let _reindexPollTimer = null;
+
+function _formatEta(seconds) {
+  if (seconds == null) return '~ETA pending';
+  if (seconds < 60)    return `~${seconds}s remaining`;
+  const mins = Math.round(seconds / 60);
+  if (mins < 60)       return `~${mins} min remaining`;
+  const hrs  = Math.floor(mins / 60);
+  const rem  = mins % 60;
+  return `~${hrs}h ${rem}m remaining`;
+}
+
+function _renderReindexProgress(statusEl, state) {
+  if (!state) { statusEl.innerHTML = ''; statusEl.textContent = ''; return; }
+  const pct = state.chunks_total > 0
+    ? Math.min(100, Math.round((state.chunks_done / state.chunks_total) * 100))
+    : 0;
+  let label;
+  if (state.status === 'completed') {
+    label = `Done — ${state.docs_done} doc(s), ${state.chunks_done} chunk(s)`;
+  } else if (state.status === 'failed') {
+    label = `Failed — ${state.error || 'unknown error'}`;
+  } else {
+    const cur = state.current_doc;
+    const docPart   = `doc ${state.docs_done + (cur ? 1 : 0)}/${state.docs_total}`;
+    const chunkPart = `${state.chunks_done.toLocaleString()} / ${state.chunks_total.toLocaleString()} chunks`;
+    label = `Reindexing — ${docPart} · ${chunkPart} · ${_formatEta(state.eta_seconds)}`;
+  }
+  const klass = state.status === 'failed' ? 'reindex-progress is-failed' : 'reindex-progress';
+  statusEl.innerHTML = `
+    <div class="${klass}">
+      <div class="reindex-bar-track"><div class="reindex-bar-fill" style="width:${pct}%"></div></div>
+      <span class="reindex-label"></span>
+    </div>`;
+  statusEl.querySelector('.reindex-label').textContent = label;
+}
+
+function _stopReindexPoll() {
+  if (_reindexPollTimer) { clearTimeout(_reindexPollTimer); _reindexPollTimer = null; }
+}
+
+async function _pollReindex(runId, statusEl, btns) {
+  try {
+    const res = await fetch('/api/documents/reindex/status?run_id=' + encodeURIComponent(runId));
+    if (!res.ok) {
+      _renderReindexProgress(statusEl, null);
+      btns.forEach(b => { if (b) b.disabled = false; });
+      return;
+    }
+    const state = await res.json();
+    _renderReindexProgress(statusEl, state);
+    if (state.status === 'running') {
+      _reindexPollTimer = setTimeout(() => _pollReindex(runId, statusEl, btns), REINDEX_POLL_MS);
+    } else {
+      btns.forEach(b => { if (b) b.disabled = false; });
+      // Leave the final state visible briefly, then clear.
+      setTimeout(() => _renderReindexProgress(statusEl, null), 12000);
+    }
+  } catch (e) {
+    _renderReindexProgress(statusEl, null);
+    btns.forEach(b => { if (b) b.disabled = false; });
+  }
+}
+
 async function runReindex(params = {}) {
   const qs = new URLSearchParams(params).toString();
   const url = '/api/documents/reindex' + (qs ? '?' + qs : '');
-  const btn = params.project_id || params.client_id ? wbReindexBtn : wbReindexAllBtn;
-  const statusEl = params.project_id || params.client_id ? wbUploadStatus : wbMaintenanceStatus;
-  btn.disabled = true;
-  statusEl.textContent = 'Re-indexing…';
+  const scoped   = params.project_id || params.client_id;
+  const statusEl = scoped ? wbUploadStatus : wbMaintenanceStatus;
+  const btns     = [wbReindexBtn, wbReindexAllBtn];
+  _stopReindexPoll();
+  btns.forEach(b => { if (b) b.disabled = true; });
+  _renderReindexProgress(statusEl, {
+    status: 'running', docs_total: 0, docs_done: 0,
+    chunks_total: 0, chunks_done: 0, current_doc: null, eta_seconds: null,
+  });
   try {
     const res = await fetch(url, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      statusEl.textContent = `Done — ${data.docs_reindexed} doc(s), ${data.chunks_processed} chunk(s)`;
-    } else {
-      statusEl.textContent = data.detail || 'Re-index failed.';
+    if (!res.ok || !data.run_id) {
+      _renderReindexProgress(statusEl, null);
+      statusEl.textContent = data.detail || 'Re-index failed to start.';
+      btns.forEach(b => { if (b) b.disabled = false; });
+      setTimeout(() => { statusEl.textContent = ''; }, 8000);
+      return;
     }
+    _renderReindexProgress(statusEl, data);
+    _pollReindex(data.run_id, statusEl, btns);
   } catch (e) {
+    _renderReindexProgress(statusEl, null);
     statusEl.textContent = 'Re-index error.';
-  } finally {
-    btn.disabled = false;
+    btns.forEach(b => { if (b) b.disabled = false; });
     setTimeout(() => { statusEl.textContent = ''; }, 8000);
   }
 }
+
+// On page load, resume polling if a reindex is already in flight (e.g. the
+// page was refreshed mid-run, or another tab kicked one off).
+async function resumeReindexPollIfActive() {
+  try {
+    const res = await fetch('/api/documents/reindex/status');
+    if (!res.ok) return;
+    const state = await res.json();
+    if (state.status !== 'running') return;
+    const scoped = state.scope && (state.scope.project_id || state.scope.client_id);
+    const statusEl = scoped ? wbUploadStatus : wbMaintenanceStatus;
+    const btns = [wbReindexBtn, wbReindexAllBtn];
+    btns.forEach(b => { if (b) b.disabled = true; });
+    _renderReindexProgress(statusEl, state);
+    _pollReindex(state.run_id, statusEl, btns);
+  } catch (e) { /* no active run */ }
+}
+resumeReindexPollIfActive();
 
 wbReindexBtn.addEventListener('click', () => {
   const params = {};

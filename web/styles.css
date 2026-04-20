@@ -1524,6 +1524,37 @@ body { display: block; }
   font-style: italic;
 }
 
+.reindex-progress {
+  display: inline-flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 240px;
+  font-style: normal;
+}
+.reindex-progress .reindex-bar-track {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  height: 6px;
+  overflow: hidden;
+}
+.reindex-progress .reindex-bar-fill {
+  background: var(--gold);
+  height: 100%;
+  width: 0%;
+  transition: width 0.4s ease;
+}
+.reindex-progress.is-failed .reindex-bar-fill {
+  background: var(--error);
+}
+.reindex-progress .reindex-label {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .wb-table-wrap {
   flex: 1;
   overflow-y: auto;

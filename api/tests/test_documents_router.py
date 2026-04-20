@@ -208,3 +208,96 @@ def test_download_document_404_when_bytes_missing(app_client):
     os.unlink(os.path.join(config.UPLOADS_PATH, doc["id"]))
     r = app_client.get(f"/documents/{doc['id']}/download")
     assert r.status_code == 404
+
+
+# ── POST /documents/reindex + GET /documents/reindex/status ───────────────────
+
+@pytest.fixture
+def clean_reindex_state():
+    """Wipe module-level reindex tracking dicts before and after each test —
+    they persist across the in-process app, which would otherwise leak runs
+    between tests."""
+    from routers import documents as docs_router
+    docs_router._reindex_runs.clear()
+    docs_router._user_active_run.clear()
+    yield
+    docs_router._reindex_runs.clear()
+    docs_router._user_active_run.clear()
+
+
+def test_reindex_returns_run_id_and_initial_state(app_client, clean_reindex_state):
+    upload(app_client, "iec61508.pdf")
+    r = app_client.post("/documents/reindex")
+    assert r.status_code == 200
+    body = r.json()
+    assert "run_id" in body and body["run_id"]
+    # The endpoint returns immediately; status may already be "completed"
+    # because TestClient drains BackgroundTasks before returning, but in
+    # either case the shape must include the progress fields.
+    assert body["status"] in {"running", "completed"}
+    assert "docs_total" in body
+    assert "chunks_total" in body
+    assert "scope" in body and body["scope"] == {"project_id": None, "client_id": None}
+
+
+def test_reindex_idempotent_per_user_while_active(app_client, clean_reindex_state):
+    """Two POSTs without an intervening completion should share a run_id.
+    Forced by pre-seeding an in-flight run so the second POST sees it."""
+    from routers import documents as docs_router
+    upload(app_client, "doc.pdf")
+    # Inject a sentinel "running" run for USER and assert the second POST
+    # returns it instead of starting a new one.
+    docs_router._reindex_runs["sentinel-run"] = {
+        "run_id": "sentinel-run", "user_email": USER, "status": "running",
+        "started_at": "2026-04-20T00:00:00+00:00", "completed_at": None,
+        "scope": {"project_id": None, "client_id": None},
+        "docs_total": 1, "docs_done": 0, "chunks_total": 0, "chunks_done": 0,
+        "current_doc": None, "rate_samples": [], "error": None,
+    }
+    docs_router._user_active_run[USER] = "sentinel-run"
+
+    r = app_client.post("/documents/reindex")
+    assert r.status_code == 200
+    assert r.json()["run_id"] == "sentinel-run"
+
+
+def test_reindex_status_by_run_id(app_client, clean_reindex_state):
+    upload(app_client, "doc.pdf")
+    run_id = app_client.post("/documents/reindex").json()["run_id"]
+    r = app_client.get(f"/documents/reindex/status?run_id={run_id}")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["run_id"] == run_id
+    assert body["status"] in {"running", "completed"}
+
+
+def test_reindex_status_without_run_id_returns_user_run(app_client, clean_reindex_state):
+    upload(app_client, "doc.pdf")
+    run_id = app_client.post("/documents/reindex").json()["run_id"]
+    r = app_client.get("/documents/reindex/status")
+    assert r.status_code == 200
+    assert r.json()["run_id"] == run_id
+
+
+def test_reindex_status_unknown_run_id_returns_404(app_client, clean_reindex_state):
+    r = app_client.get("/documents/reindex/status?run_id=does-not-exist")
+    assert r.status_code == 404
+
+
+def test_reindex_status_no_runs_for_user_returns_404(app_client, clean_reindex_state):
+    r = app_client.get("/documents/reindex/status")
+    assert r.status_code == 404
+
+
+def test_reindex_status_other_user_run_returns_404(app_client, clean_reindex_state):
+    """A user must not be able to read another user's run state."""
+    from routers import documents as docs_router
+    docs_router._reindex_runs["other-user-run"] = {
+        "run_id": "other-user-run", "user_email": "someone-else@dev",
+        "status": "running", "started_at": "2026-04-20T00:00:00+00:00",
+        "completed_at": None, "scope": {"project_id": None, "client_id": None},
+        "docs_total": 0, "docs_done": 0, "chunks_total": 0, "chunks_done": 0,
+        "current_doc": None, "rate_samples": [], "error": None,
+    }
+    r = app_client.get("/documents/reindex/status?run_id=other-user-run")
+    assert r.status_code == 404
