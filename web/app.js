@@ -1611,6 +1611,18 @@ async function loadWorkbench() {
   wbAllProjects = pr?.ok ? await pr.json() : [];
   renderWbScopeList();
   await loadWbDocs();
+  _resumeReindexPollingIfActive();
+}
+
+async function _resumeReindexPollingIfActive() {
+  // If a reindex is in flight (possibly started from another tab/session),
+  // show the progress bar and start polling.
+  try {
+    const res = await fetch('/api/documents/reindex/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s.status === 'running') _startReindexPolling();
+  } catch (e) { /* ignore */ }
 }
 
 function renderWbScopeList() {
@@ -2393,26 +2405,103 @@ const wbReindexAllBtn     = document.getElementById('wb-reindex-all-btn');
 const wbMigrateScopeBtn   = document.getElementById('wb-migrate-scope-btn');
 const wbMaintenanceStatus = document.getElementById('wb-maintenance-status');
 
+// ── Reindex progress (lancellmot#52) ───────────────────────────
+const wbReindexProgress      = document.getElementById('wb-reindex-progress');
+const wbReindexProgressLabel = document.getElementById('wb-reindex-progress-label');
+const wbReindexProgressEta   = document.getElementById('wb-reindex-progress-eta');
+const wbReindexProgressFill  = document.getElementById('wb-reindex-progress-fill');
+
+let _reindexPollTimer = null;
+
+function _formatEta(secs) {
+  if (!secs || secs <= 0) return '';
+  if (secs < 60) return `~${secs}s remaining`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `~${mins} min remaining`;
+  const hrs = Math.floor(mins / 60);
+  const rem = mins % 60;
+  return rem ? `~${hrs}h ${rem}m remaining` : `~${hrs}h remaining`;
+}
+
+function _fmtInt(n) { return (n ?? 0).toLocaleString(); }
+
+function _paintReindexProgress(s) {
+  const pct = s.chunks_total > 0 ? Math.floor(100 * s.chunks_done / s.chunks_total) : 0;
+  wbReindexProgressFill.style.width = `${pct}%`;
+  const docLine = s.current_doc
+    ? `doc ${s.docs_done + 1}/${s.docs_total}`
+    : `doc ${s.docs_done}/${s.docs_total}`;
+  wbReindexProgressLabel.textContent =
+    `Reindexing — ${docLine} · ${_fmtInt(s.chunks_done)} / ${_fmtInt(s.chunks_total)} chunks`;
+  wbReindexProgressEta.textContent = _formatEta(s.eta_seconds);
+  wbReindexProgress.hidden = false;
+}
+
+async function _pollReindexOnce() {
+  try {
+    const res = await fetch('/api/documents/reindex/status');
+    if (!res.ok) return;
+    const s = await res.json();
+    if (s.status === 'running') {
+      _paintReindexProgress(s);
+      wbReindexBtn.disabled = true;
+      wbReindexAllBtn.disabled = true;
+      return;
+    }
+    // Terminal — paint 100% for a beat, then hide.
+    if (s.status === 'completed' || s.status === 'failed') {
+      if (_reindexPollTimer) { clearInterval(_reindexPollTimer); _reindexPollTimer = null; }
+      wbReindexBtn.disabled = false;
+      wbReindexAllBtn.disabled = false;
+      if (s.status === 'completed') {
+        wbReindexProgressFill.style.width = '100%';
+        wbReindexProgressLabel.textContent =
+          `Reindexed ${_fmtInt(s.docs_done)} doc(s), ${_fmtInt(s.chunks_done)} chunk(s).`;
+        wbReindexProgressEta.textContent = '';
+      } else {
+        wbReindexProgressLabel.textContent = `Reindex failed: ${s.error || 'unknown error'}`;
+        wbReindexProgressEta.textContent = '';
+      }
+      setTimeout(() => { wbReindexProgress.hidden = true; }, 8000);
+      await loadWbDocs();
+    }
+  } catch (e) {
+    // Network hiccup — swallow and let the next tick retry.
+  }
+}
+
+function _startReindexPolling() {
+  if (_reindexPollTimer) return;
+  _pollReindexOnce();
+  _reindexPollTimer = setInterval(_pollReindexOnce, 2500);
+}
+
 async function runReindex(params = {}) {
   const qs = new URLSearchParams(params).toString();
   const url = '/api/documents/reindex' + (qs ? '?' + qs : '');
-  const btn = params.project_id || params.client_id ? wbReindexBtn : wbReindexAllBtn;
-  const statusEl = params.project_id || params.client_id ? wbUploadStatus : wbMaintenanceStatus;
-  btn.disabled = true;
-  statusEl.textContent = 'Re-indexing…';
+  wbReindexBtn.disabled = true;
+  wbReindexAllBtn.disabled = true;
+  wbReindexProgressLabel.textContent = 'Starting reindex…';
+  wbReindexProgressEta.textContent = '';
+  wbReindexProgressFill.style.width = '0%';
+  wbReindexProgress.hidden = false;
   try {
     const res = await fetch(url, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
-    if (res.ok) {
-      statusEl.textContent = `Done — ${data.docs_reindexed} doc(s), ${data.chunks_processed} chunk(s)`;
-    } else {
-      statusEl.textContent = data.detail || 'Re-index failed.';
+    if (!res.ok) {
+      wbReindexProgressLabel.textContent = data.detail || 'Reindex failed to start.';
+      wbReindexProgressEta.textContent = '';
+      wbReindexBtn.disabled = false;
+      wbReindexAllBtn.disabled = false;
+      setTimeout(() => { wbReindexProgress.hidden = true; }, 8000);
+      return;
     }
+    _startReindexPolling();
   } catch (e) {
-    statusEl.textContent = 'Re-index error.';
-  } finally {
-    btn.disabled = false;
-    setTimeout(() => { statusEl.textContent = ''; }, 8000);
+    wbReindexProgressLabel.textContent = 'Reindex error.';
+    wbReindexBtn.disabled = false;
+    wbReindexAllBtn.disabled = false;
+    setTimeout(() => { wbReindexProgress.hidden = true; }, 8000);
   }
 }
 

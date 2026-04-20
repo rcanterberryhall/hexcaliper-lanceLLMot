@@ -1524,6 +1524,36 @@ body { display: block; }
   font-style: italic;
 }
 
+.wb-reindex-progress {
+  margin: 6px 0 10px;
+  padding: 8px 10px;
+  background: var(--surface-2);
+  border: 1px solid var(--purple-dim);
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.wb-reindex-progress[hidden] { display: none; }
+.wb-reindex-progress-info {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.wb-reindex-progress-track {
+  width: 100%;
+  height: 6px;
+  background: var(--surface);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.wb-reindex-progress-fill {
+  height: 100%;
+  width: 0%;
+  background: var(--purple);
+  transition: width 0.4s ease;
+}
+
 .wb-table-wrap {
   flex: 1;
   overflow-y: auto;

@@ -227,6 +227,16 @@
             <button id="wb-open-chat-btn" class="wb-chat-btn" disabled title="Open a new chat with this project's documents in context">Open in Chat</button>
           </div>
 
+          <div id="wb-reindex-progress" class="wb-reindex-progress" hidden>
+            <div class="wb-reindex-progress-info">
+              <span id="wb-reindex-progress-label">Reindexing…</span>
+              <span id="wb-reindex-progress-eta"></span>
+            </div>
+            <div class="wb-reindex-progress-track">
+              <div id="wb-reindex-progress-fill" class="wb-reindex-progress-fill"></div>
+            </div>
+          </div>
+
           <div id="wb-bulk-bar" class="wb-bulk-bar" hidden>
             <span class="wb-bulk-count"><strong id="wb-bulk-count-n">0</strong> selected</span>
             <button id="wb-bulk-edit-btn" class="wb-chat-btn" title="Edit type, scope, or classification for the selected documents">Edit attributes</button>
