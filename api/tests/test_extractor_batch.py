@@ -134,9 +134,10 @@ async def test_extract_chunks_batch_flattens_messages_into_single_prompt(monkeyp
 
     assert len(submitted) == 1
     # Prompt must contain both the system-level instructions (vocabulary,
-    # schema) and the user-level chunk text.
+    # schema) and the user-level chunk text. Check for a durable marker of
+    # each: the JSON-schema intro (system) and the chunk text (user).
     prompt = submitted[0]
-    assert "functional-safety document analyst" in prompt
+    assert "JSON schema (all fields required)" in prompt
     assert "tell me about SIL 2" in prompt
 
 

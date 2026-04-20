@@ -161,7 +161,44 @@ CONCEPT_VOCAB: list[str] = [
     "software validation",
     "change management",
     "configuration management",
-    # Document roles (not concepts per se but useful for classification)
+    # Controls engineering — logic / programming
+    "plc program",
+    "ladder logic",
+    "function block",
+    "structured text",
+    "scan cycle",
+    "tag name",
+    "io mapping",
+    # Controls engineering — operational modes
+    "interlock",
+    "permissive",
+    "bypass",
+    "manual override",
+    "hand/off/auto",
+    # HMI / SCADA
+    "hmi screen",
+    "alarm setpoint",
+    "trend group",
+    "operator permission",
+    # Instrumentation
+    "pid loop",
+    "loop tuning",
+    "analog scaling",
+    "instrument range",
+    "transmitter",
+    # Motors / drives / power
+    "vfd drive",
+    "motor starter",
+    "soft start",
+    "drive parameter",
+    "motor control center",
+    "safety relay",
+    # Engineering documentation
+    "p&id",
+    "loop diagram",
+    "wiring diagram",
+    "sequence of operations",
+    "functional description",
 ]
 
 # ── Document roles ─────────────────────────────────────────────────────────────
@@ -224,7 +261,7 @@ def _build_system_prompt(extra_vocab: list[str] | None = None) -> str:
                 merged.append(c)
                 existing.add(c)
     vocab_block = "\n".join(f"  - {c}" for c in merged)
-    return f"""You are a functional-safety document analyst.
+    return f"""You are a controls-engineering document analyst with functional-safety depth.
 Your task is to extract structured metadata from a document chunk.
 Return ONLY a JSON object — no prose, no markdown fences, no explanation.
 
