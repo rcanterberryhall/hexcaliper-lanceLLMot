@@ -153,7 +153,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
                                   "service is not reachable). Plain chat "
                                   "still works."})
             yield _sse({"type": "done", "conversation_id": conv_id,
-                        "model": "agent", "sources": [], "doc_ids": [],
+                        "model": "agent", "sources": None, "doc_ids": [],
                         "has_client_docs": False})
             return
 
@@ -216,7 +216,7 @@ async def agent_chat(req: AgentChatRequest, request: Request):
         await _store_session_mapping(conv_id, run_id)
         save(status)
         yield _sse({"type": "done", "conversation_id": conv_id,
-                    "model": "agent", "sources": [], "doc_ids": [],
+                    "model": "agent", "sources": None, "doc_ids": [],
                     "has_client_docs": False})
 
     return StreamingResponse(generate(), media_type="text/event-stream",
