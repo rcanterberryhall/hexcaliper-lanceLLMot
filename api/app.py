@@ -13,7 +13,7 @@ _log = logging.getLogger("hexcaliper")
 import config
 import db
 import rag
-from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections, system_prompts, status, mcp
+from routers import health, conversations, documents, library, chat, tech_library, acquisition, escalation, connections, system_prompts, status, mcp, agent
 from routers.documents import active_upload_snapshot
 
 app = FastAPI(title="LanceLLMot API", version="4.0.0")
@@ -77,6 +77,7 @@ app.include_router(system_prompts.router) # /system-prompts — saved system pro
 app.include_router(status.router)         # /status         — cross-service status
 app.include_router(chat.router)
 app.include_router(mcp.router)            # /mcp (→ /api/mcp via nginx) — MCP tool server
+app.include_router(agent.router)          # /agent — hermes-backed agent mode
 
 
 @app.get("/activity")

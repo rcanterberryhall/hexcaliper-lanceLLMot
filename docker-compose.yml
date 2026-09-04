@@ -32,6 +32,9 @@ services:
       # Unset MCP_TOKEN rejects every MCP request (fails closed).
       MCP_TOKEN: "${MCP_TOKEN:-}"
       MCP_USER_EMAIL: "${MCP_USER_EMAIL:-local@dev}"
+      # Agent mode: the hermes API server on the shared docker network.
+      HERMES_URL: "${HERMES_URL:-http://hermes:8642}"
+      HERMES_API_KEY: "${HERMES_API_KEY:-}"
     volumes:
       - ./data:/app/data
     devices:

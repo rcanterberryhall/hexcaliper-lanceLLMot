@@ -81,6 +81,13 @@ WEBDAV_USERNAME = _get("WEBDAV_USERNAME", "")
 # them unreadable; re-enter all credentials if you rotate the key.
 CREDENTIALS_KEY = _get("CREDENTIALS_KEY", "")
 
+# ── Agent mode (hermes-agent service) ─────────────────────────────────────────
+# The hermes API server on the shared docker network. Agent-mode turns
+# are executed there; the agent model is hermes's configured default and
+# is never sent from here.
+HERMES_URL = _get("HERMES_URL", "http://hermes:8642")
+HERMES_API_KEY = _get("HERMES_API_KEY", "")
+
 # ── MCP server ────────────────────────────────────────────────────────────────
 # Shared secret for the /api/mcp endpoint (X-LanceLLMot-MCP-Token header).
 # Unset rejects every request — the endpoint reaches the whole document

@@ -185,6 +185,22 @@ def _create_schema(c: sqlite3.Connection) -> None:
     );
     CREATE INDEX IF NOT EXISTS idx_concept_scope ON concept_scope(scope_type, scope_id);
 
+    CREATE TABLE IF NOT EXISTS agent_sessions (
+        conversation_id    TEXT PRIMARY KEY,
+        hermes_session_id  TEXT NOT NULL,
+        hermes_session_key TEXT NOT NULL DEFAULT '',
+        created_at         TEXT NOT NULL
+    );
+
+    CREATE TABLE IF NOT EXISTS agent_turns (
+        run_id          TEXT PRIMARY KEY,
+        conversation_id TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        tool_trace      TEXT NOT NULL DEFAULT '[]',
+        created_at      TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_agent_turns_conv ON agent_turns(conversation_id);
+
     COMMIT;
     """)
 
@@ -384,6 +400,59 @@ def _conv(d: dict) -> dict:
 
 
 # ── Documents ─────────────────────────────────────────────────────────────────
+
+def get_agent_session(conversation_id: str) -> Optional[dict]:
+    """Return a conversation's hermes session mapping, or None.
+
+    The mapping is what lets an agent conversation resume with its
+    history across turns and restarts (REQ-F-008); hermes's own store
+    remains the authoritative transcript.
+    """
+    row = conn().execute(
+        "SELECT * FROM agent_sessions WHERE conversation_id=?",
+        (conversation_id,),
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def upsert_agent_session(conversation_id: str, hermes_session_id: str,
+                         hermes_session_key: str = "") -> None:
+    conn().execute(
+        "INSERT INTO agent_sessions "
+        "(conversation_id, hermes_session_id, hermes_session_key, created_at) "
+        "VALUES (?,?,?,?) "
+        "ON CONFLICT(conversation_id) DO UPDATE SET "
+        "hermes_session_id=excluded.hermes_session_id, "
+        "hermes_session_key=excluded.hermes_session_key",
+        (conversation_id, hermes_session_id, hermes_session_key, _now_iso()),
+    )
+
+
+def insert_agent_turn(run_id: str, conversation_id: str, status: str,
+                      tool_trace: list) -> None:
+    """Record one agent turn's outcome beside its rendered messages."""
+    conn().execute(
+        "INSERT OR REPLACE INTO agent_turns "
+        "(run_id, conversation_id, status, tool_trace, created_at) "
+        "VALUES (?,?,?,?,?)",
+        (run_id, conversation_id, status, json.dumps(tool_trace),
+         _now_iso()),
+    )
+
+
+def list_agent_turns(conversation_id: str) -> list[dict]:
+    rows = conn().execute(
+        "SELECT * FROM agent_turns WHERE conversation_id=? "
+        "ORDER BY created_at",
+        (conversation_id,),
+    ).fetchall()
+    out = []
+    for r in rows:
+        d = dict(r)
+        d["tool_trace"] = json.loads(d.get("tool_trace") or "[]")
+        out.append(d)
+    return out
+
 
 def get_document(doc_id: str) -> Optional[dict]:
     row = conn().execute("SELECT * FROM documents WHERE id=?", (doc_id,)).fetchone()
