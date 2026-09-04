@@ -871,9 +871,10 @@ function setAgentUi(mode, locked) {
   agentMode = mode;
   agentToggle.checked = mode;
   agentToggle.disabled = locked;
-  const hide = mode;
+  // Inline style, not a class: the model-status poller rewrites the
+  // dot elements' className wholesale and would clobber a class.
   for (const el of [modelSelLabel, modelSel, modelDot, modelDotLabel, loadModelBtn]) {
-    if (el) el.classList.toggle('agent-hidden', hide);
+    if (el) el.style.display = mode ? 'none' : '';
   }
 }
 
