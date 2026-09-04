@@ -81,6 +81,17 @@ WEBDAV_USERNAME = _get("WEBDAV_USERNAME", "")
 # them unreadable; re-enter all credentials if you rotate the key.
 CREDENTIALS_KEY = _get("CREDENTIALS_KEY", "")
 
+# ── MCP server ────────────────────────────────────────────────────────────────
+# Shared secret for the /api/mcp endpoint (X-LanceLLMot-MCP-Token header).
+# Unset rejects every request — the endpoint reaches the whole document
+# store, so it fails closed rather than open.
+MCP_TOKEN = _get("MCP_TOKEN", "")
+
+# Identity the MCP tools act as. MCP calls carry no Cloudflare header, so
+# a service identity is configured; the default matches the identity the
+# app itself assumes when the header is absent.
+MCP_USER_EMAIL = _get("MCP_USER_EMAIL", "local@dev")
+
 # ── CORS ──────────────────────────────────────────────────────────────────────
 # Comma-separated list of allowed origins, or "*" for all (dev only).
 # Defaults to localhost ports used by the bundled nginx.

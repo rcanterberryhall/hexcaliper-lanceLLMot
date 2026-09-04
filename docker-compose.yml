@@ -28,6 +28,10 @@ services:
       # If migrating from a prior install, rename data/hexcaliper.db to data/lancellmot.db
       # or set DB_PATH explicitly: DB_PATH: "/app/data/hexcaliper.db"
       DB_PATH: "/app/data/lancellmot.db"
+      # MCP tool server (/api/mcp): shared secret + service identity.
+      # Unset MCP_TOKEN rejects every MCP request (fails closed).
+      MCP_TOKEN: "${MCP_TOKEN:-}"
+      MCP_USER_EMAIL: "${MCP_USER_EMAIL:-local@dev}"
     volumes:
       - ./data:/app/data
     devices:
