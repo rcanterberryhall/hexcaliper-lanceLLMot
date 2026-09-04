@@ -106,7 +106,9 @@
         <!-- Model selectors: Chat and Analysis -->
         <div class="model-controls">
           <div class="model-wrap">
-            <label for="model-select">Chat</label>
+            <label for="agent-toggle" class="agent-label" title="Run this conversation through the hermes agent: tools, multi-step reasoning. Fixed for the life of the conversation.">⚔ Agent</label>
+            <input type="checkbox" id="agent-toggle" />
+            <label for="model-select" id="model-select-label">Chat</label>
             <span id="model-dot" class="model-dot"></span>
             <span id="model-dot-label" class="model-dot-label">Checking…</span>
             <select id="model-select">

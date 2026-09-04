@@ -898,6 +898,47 @@ body { display: block; }
 }
 
 
+/* ── Agent mode ─────────────────────────────────────────────── */
+.agent-label {
+  color: var(--gold);
+  cursor: pointer;
+}
+#agent-toggle {
+  accent-color: var(--gold);
+  cursor: pointer;
+  margin-right: 10px;
+}
+#agent-toggle:disabled,
+#agent-toggle:disabled + #model-select-label {
+  cursor: default;
+  opacity: 0.7;
+}
+.agent-hidden {
+  display: none !important;
+}
+.tool-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-bottom: 6px;
+}
+.tool-chip {
+  font-size: 0.72rem;
+  padding: 2px 8px;
+  border-radius: 10px;
+  border: 1px solid var(--gold);
+  color: var(--gold);
+  opacity: 0.85;
+}
+.tool-chip.running { font-style: italic; }
+.tool-chip.error   { border-color: #c0392b; color: #c0392b; }
+.agent-incomplete {
+  font-size: 0.78rem;
+  font-style: italic;
+  color: #c0392b;
+  margin-top: 6px;
+}
+
 /* ── Live search indicator ──────────────────────────────────── */
 .search-badge {
   font-size: 0.72rem;

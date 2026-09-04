@@ -32,8 +32,13 @@ const statusBar         = document.getElementById('status-bar');
 const statusSpinner     = document.getElementById('status-spinner');
 const statusMsg         = document.getElementById('status-msg');
 const scopeBadge        = document.getElementById('scope-badge');
+const agentToggle       = document.getElementById('agent-toggle');
+const modelSelLabel     = document.getElementById('model-select-label');
 
 let currentConvId = null;
+// Agent mode is fixed per conversation: chosen on a new chat, derived
+// and locked when a stored conversation loads (its model is 'agent').
+let agentMode = false;
 let abortController = null;
 let uploadInProgress = false;
 let gpuFastInterval = null;
@@ -766,6 +771,7 @@ async function loadConversation(id) {
     if (!res.ok) return;
     const conv = await res.json();
     currentConvId = id;
+    setAgentUi(conv.model === 'agent', true);
     chat.innerHTML = '';
     for (const msg of conv.messages || []) {
       const role = msg.role === 'assistant' ? 'ai' : 'user';
@@ -847,8 +853,39 @@ function newChat() {
   setActiveConvItem(null);
   setChatDocsVisible(false);
   syncSpForConversation(null);
+  setAgentUi(agentToggle.checked, false);
   showCopyrightNotice();
 }
+
+/**
+ * Applies agent-mode UI state: checkbox, lock, and model-select
+ * visibility (the agent model is fixed server-side, so the selector
+ * is meaningless while agent mode is on).
+ *
+ * @param {boolean} mode - Whether this conversation runs in agent mode.
+ * @param {boolean} locked - True once the conversation exists; the mode
+ *   is then fixed for its whole life.
+ * @return {void}
+ */
+function setAgentUi(mode, locked) {
+  agentMode = mode;
+  agentToggle.checked = mode;
+  agentToggle.disabled = locked;
+  const hide = mode;
+  for (const el of [modelSelLabel, modelSel, modelDot, modelDotLabel, loadModelBtn]) {
+    if (el) el.classList.toggle('agent-hidden', hide);
+  }
+}
+
+agentToggle.addEventListener('change', () => {
+  if (currentConvId) {
+    // Locked conversations should have a disabled checkbox already;
+    // belt-and-braces: revert any change.
+    setAgentUi(agentMode, true);
+    return;
+  }
+  setAgentUi(agentToggle.checked, false);
+});
 
 newChatBtn.addEventListener('click', () => {
   newChat();
@@ -1049,6 +1086,16 @@ form.addEventListener('submit', async (e) => {
   e.preventDefault();
 
   if (abortController) {
+    // Aborting the fetch already stops an agent run server-side (the
+    // backend ends the hermes run on client disconnect); the explicit
+    // stop makes it immediate when the conversation is known.
+    if (agentMode && currentConvId) {
+      fetch('/api/agent/stop', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ conversation_id: currentConvId }),
+      }).catch(() => {});
+    }
     abortController.abort();
     return;
   }
@@ -1068,14 +1115,14 @@ form.addEventListener('submit', async (e) => {
 
   try {
     abortController = new AbortController();
-    const body = { message, model };
+    const body = agentMode ? { message } : { message, model };
     if (currentConvId) body.conversation_id = currentConvId;
     const wbProjectId = chatView.dataset.projectId;
-    if (wbProjectId) body.project_id = wbProjectId;
-    const systemPrompt = systemPromptInput.value.trim();
+    if (wbProjectId && !agentMode) body.project_id = wbProjectId;
+    const systemPrompt = agentMode ? '' : systemPromptInput.value.trim();
     if (systemPrompt) body.system = systemPrompt;
 
-    const res = await fetch('/api/chat', {
+    const res = await fetch(agentMode ? '/api/agent/chat' : '/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -1094,6 +1141,34 @@ form.addEventListener('submit', async (e) => {
     const { bubble, inner } = createStreamingBubble();
     const { onThink, onToken } = makeThinkParser(inner, bubble);
     let searchBadge = null;
+    let chipRow = null;
+    let incomplete = false;
+
+    // One chip per tool invocation: running (italic) until its
+    // completion event resolves it with a duration or an error mark.
+    function onToolEvent(evt) {
+      if (!chipRow) {
+        chipRow = document.createElement('div');
+        chipRow.className = 'tool-chips';
+        inner.insertBefore(chipRow, bubble);
+      }
+      const name = (evt.name || '').replace(/^mcp__[a-z]+__/, '');
+      if (evt.status === 'running') {
+        const chip = document.createElement('span');
+        chip.className = 'tool-chip running';
+        chip.dataset.tool = evt.name;
+        chip.textContent = `⏳ ${name}`;
+        chipRow.appendChild(chip);
+        return;
+      }
+      const open = chipRow.querySelector(`.tool-chip.running[data-tool="${evt.name}"]`);
+      const chip = open || document.createElement('span');
+      if (!open) { chip.dataset.tool = evt.name; chipRow.appendChild(chip); }
+      const failed = evt.status === 'error';
+      chip.className = failed ? 'tool-chip error' : 'tool-chip';
+      const secs = typeof evt.duration === 'number' ? ` ${evt.duration.toFixed(1)}s` : '';
+      chip.textContent = `${failed ? '✗' : '✓'} ${name}${secs}`;
+    }
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let sseBuffer = '';
@@ -1126,6 +1201,19 @@ form.addEventListener('submit', async (e) => {
           if (searchBadge) { searchBadge.remove(); searchBadge = null; }
           onToken(evt.content);
           scrollToBottom();
+        } else if (evt.type === 'tool') {
+          onToolEvent(evt);
+          scrollToBottom();
+        } else if (evt.type === 'agent_error') {
+          // The turn did not complete (failed, stopped, budget, or
+          // hermes down): never present what streamed as an answer.
+          incomplete = true;
+          showErrorBar(evt.detail, 'warning');
+          const notice = document.createElement('div');
+          notice.className = 'agent-incomplete';
+          notice.textContent = `⚠ agent turn incomplete: ${evt.detail}`;
+          inner.appendChild(notice);
+          scrollToBottom();
         } else if (evt.type === 'warning') {
           showErrorBar(evt.detail, 'warning');
         } else if (evt.type === 'error') {
@@ -1154,10 +1242,15 @@ form.addEventListener('submit', async (e) => {
       bubble.innerHTML = renderMarkdown(rawText);
       addMeta(inner, doneData.model, doneData.sources);
       addCopyBtn(inner, bubble);
-      addEscalateBtn(inner, doneData.conversation_id, message, doneData.doc_ids || [], doneData.has_client_docs || false);
-      addDeepAnalysisBtn(inner, bubble, doneData.conversation_id, message);
+      if (!agentMode) {
+        // Escalation and deep analysis are plain-chat features keyed to
+        // the RAG context; an agent turn carries neither.
+        addEscalateBtn(inner, doneData.conversation_id, message, doneData.doc_ids || [], doneData.has_client_docs || false);
+        addDeepAnalysisBtn(inner, bubble, doneData.conversation_id, message);
+      }
       if (!currentConvId) {
         currentConvId = doneData.conversation_id;
+        if (agentMode) setAgentUi(true, true);  // mode fixed from turn one
         await fetchConversations();
         setActiveConvItem(currentConvId);
         setChatDocsVisible(true);
