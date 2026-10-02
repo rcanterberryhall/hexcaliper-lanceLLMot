@@ -44,7 +44,7 @@ scoped vocabulary, conversation management, workspace (clients/projects), stream
 
 ### Phase 5b — Deep Analysis (merLLM batch integration)
 - `routers/health.py` — three new batch proxy routes: `POST /batch/submit`, `GET /batch/status/{job_id}`, `GET /batch/results/{job_id}`
-- `web/app.js` — `addDeepAnalysisBtn()` adds an ⚗ button to every completed assistant message; `_pollDeepAnalysis()` polls `/batch/status/{id}` every 5 s (max 360 polls), fetches result when complete, and inserts it as a new AI message
+- `web/app.js` — `addDeepAnalysisBtn()` adds an ⚗ button to every completed assistant message; `_pollDeepAnalysis()` polls `/batch/status/{id}` every 5 s (max 360 polls), fetches result when complete, and inserts it as a new AI message — only a 2xx result is rendered as an answer, a 409 (the status/results race) and a 502 (merLLM unreachable, so the job is still merLLM's) keep polling, and a 404 abandons the job after 5 consecutive misses
 - `web/styles.css` — `.deep-btn` (hidden until hover, gold highlight, same pattern as `.escalate-btn`)
 - `api/tests/test_batch_proxy.py` — 8 tests for all three proxy routes (success, 404/409, 502)
 
