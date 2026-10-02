@@ -281,33 +281,82 @@ function addDeepAnalysisBtn(inner, bubble, convId, queryText) {
   inner.appendChild(btn);
 }
 
+/** Reads the backend's `detail` off a failed batch response. */
+async function _deepAnalysisDetail(res) {
+  const body = await res.json().catch(() => ({}));
+  return body.detail || `HTTP ${res.status}`;
+}
+
+function _failDeepAnalysis(btn, detail) {
+  btn.disabled = false;
+  btn.textContent = 'Failed';
+  setStatus('Deep analysis failed: ' + detail, 'error');
+}
+
+/**
+ * Polls a submitted deep-analysis job to a terminal state.
+ *
+ * The batch proxy reports each way a job can fail with its own status code,
+ * and `fetch` does not reject on any of them, so every response is checked
+ * before its body is trusted — an unchecked `{detail: …}` error body parses
+ * cleanly and would otherwise render as a finished answer.
+ *
+ * Which failures end the poll follows merLLM owning a submitted job's
+ * lifetime: a 502 means merLLM is unreachable right now, so the job may still
+ * be queued and polling continues, and a 404 is only acted on after
+ * MISS_TOLERANCE consecutive misses — the same consecutive-miss rule, and the
+ * same tolerance of 5, that `BATCH_MISS_TOLERANCE` applies on the extractor's
+ * poll path. A 409 from results is the gap between merLLM marking a job
+ * complete and its output being readable, so it resolves nothing either way.
+ */
 function _pollDeepAnalysis(jobId, btn) {
-  const MAX = 360; // 30 min at 5s intervals
+  const MAX = 360;          // 30 min at 5s intervals
+  const MISS_TOLERANCE = 5; // consecutive 404s before the job is abandoned
   let n = 0;
+  let misses = 0;
+  let inFlight = false;
   const iv = setInterval(async () => {
+    if (inFlight) return;
     if (++n > MAX) {
       clearInterval(iv);
       btn.textContent = 'Timed out';
       return;
     }
+    inFlight = true;
     try {
-      const s = await fetch(`/api/batch/status/${jobId}`).then(r => r.json());
+      const sRes = await fetch(`/api/batch/status/${jobId}`);
+      if (sRes.status === 404) {
+        if (++misses >= MISS_TOLERANCE) {
+          clearInterval(iv);
+          _failDeepAnalysis(btn, await _deepAnalysisDetail(sRes));
+        }
+        return;
+      }
+      if (!sRes.ok) return;
+      misses = 0;
+      const s = await sRes.json();
       if (s.status === 'completed') {
+        const rRes = await fetch(`/api/batch/results/${jobId}`);
+        if (rRes.status === 409) return;
+        if (!rRes.ok) {
+          clearInterval(iv);
+          _failDeepAnalysis(btn, await _deepAnalysisDetail(rRes));
+          return;
+        }
+        const data = await rRes.json();
         clearInterval(iv);
-        const data = await fetch(`/api/batch/results/${jobId}`).then(r => r.json());
         btn.textContent = '✓ Done';
         createMessage('ai', data.result || '(no result)', { modelTag: 'deep analysis' });
         scrollToBottom();
         setStatus('Deep analysis complete.', 'info');
       } else if (s.status === 'failed') {
         clearInterval(iv);
-        btn.disabled = false;
-        btn.textContent = 'Failed';
-        setStatus('Deep analysis failed: ' + (s.error || 'unknown'), 'error');
+        _failDeepAnalysis(btn, s.error || 'unknown');
       } else {
         btn.textContent = s.status === 'running' ? '⚙ Running…' : '⏳ Queued';
       }
-    } catch (_) { /* network hiccup — keep polling */ }
+    } catch (_) { /* transport hiccup — keep polling */ }
+    finally { inFlight = false; }
   }, 5000);
 }
 
