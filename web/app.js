@@ -2531,9 +2531,20 @@ function _paintReindexProgress(s) {
   wbReindexProgress.hidden = false;
 }
 
+// Every exit from the poll runs through here, so no path can stop polling
+// without handing the buttons back — runReindex disables both on start and a
+// disabled Re-index is the one control that could recover from a stalled run.
+function _stopReindexPolling() {
+  if (_reindexPollTimer) { clearInterval(_reindexPollTimer); _reindexPollTimer = null; }
+  wbReindexBtn.disabled = false;
+  wbReindexAllBtn.disabled = false;
+}
+
 async function _pollReindexOnce() {
   try {
     const res = await fetch('/api/documents/reindex/status');
+    // A transient failure must not end the run: the next tick retries, and once
+    // the API is answering again its status decides the outcome below.
     if (!res.ok) return;
     const s = await res.json();
     if (s.status === 'running') {
@@ -2544,9 +2555,7 @@ async function _pollReindexOnce() {
     }
     // Terminal — paint 100% for a beat, then hide.
     if (s.status === 'completed' || s.status === 'failed') {
-      if (_reindexPollTimer) { clearInterval(_reindexPollTimer); _reindexPollTimer = null; }
-      wbReindexBtn.disabled = false;
-      wbReindexAllBtn.disabled = false;
+      _stopReindexPolling();
       if (s.status === 'completed') {
         wbReindexProgressFill.style.width = '100%';
         wbReindexProgressLabel.textContent =
@@ -2558,7 +2567,22 @@ async function _pollReindexOnce() {
       }
       setTimeout(() => { wbReindexProgress.hidden = true; }, 8000);
       await loadWbDocs();
+      return;
     }
+    // 'idle' — the API has no run record for this caller. _reindex_runs is an
+    // in-memory dict keyed by cf-access user, so a restart erases the record and
+    // a changed login looks under a different key. Either way this page cannot
+    // observe the run any more, and leaving the bar frozen would keep asserting
+    // progress that nothing is reporting. Any other status is unknown to this
+    // build and gets the same treatment, so the poll can never fall through
+    // every branch and spin on with both buttons dead.
+    _stopReindexPolling();
+    wbReindexProgressFill.style.width = '0%';
+    wbReindexProgressLabel.textContent = s.status === 'idle'
+      ? 'Reindex progress lost — the API has no record of the run (restart, or a different login). Re-run to index the scope again.'
+      : `Reindex progress lost — unrecognised status "${s.status}".`;
+    wbReindexProgressEta.textContent = '';
+    setTimeout(() => { wbReindexProgress.hidden = true; }, 8000);
   } catch (e) {
     // Network hiccup — swallow and let the next tick retry.
   }
