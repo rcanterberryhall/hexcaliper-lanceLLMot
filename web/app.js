@@ -1851,7 +1851,49 @@ function updateSortHeaders() {
   });
 }
 
+// Assigning a value a <select> has no option for leaves it on no selection at
+// all, so a restored value is checked against the rebuilt options first.
+function _hasOption(sel, value) {
+  return !!sel && Array.from(sel.options).some(o => o.value === value);
+}
+
+// Any assignment to wbDocTbody.innerHTML detaches an open inline edit form
+// along with whatever the operator had typed into it, and five callers reach
+// that repaint — including the 2.5 s reindex poll, which needs no user action.
+// So snapshot the form before the repaint and re-open it afterwards.
+function _captureWbEdit() {
+  const editTr = wbDocTbody.querySelector('.wb-edit-row');
+  if (!editTr) return null;
+  const active     = document.activeElement;
+  const focusField = active && editTr.contains(active) ? active.dataset.field : null;
+  const fields = {};
+  editTr.querySelectorAll('[data-field]').forEach(el => { fields[el.dataset.field] = el.value; });
+  return {
+    docId: editTr.dataset.docId,
+    fields,
+    focusField,
+    selStart: focusField && active.selectionStart != null ? active.selectionStart : null,
+    selEnd:   focusField && active.selectionEnd   != null ? active.selectionEnd   : null,
+  };
+}
+
+function _restoreWbEdit(pending) {
+  if (!pending) return;
+  const btn = Array.from(wbDocTbody.querySelectorAll('.wb-edit-btn'))
+    .find(b => b.dataset.id === pending.docId);
+  const doc = wbDocs.find(d => d.id === pending.docId);
+  if (!btn || !doc) {
+    // Deleted, or filtered out of the current view — the edit cannot be put
+    // back, so say so rather than dropping it silently.
+    const name = pending.fields.filename || 'that document';
+    setStatus(`Unsaved attribute edits to "${name}" were discarded — it is no longer in this view.`, 'warning');
+    return;
+  }
+  _openWbEdit(btn.closest('tr'), doc, pending);
+}
+
 function renderWbDocs() {
+  const pendingEdit = _captureWbEdit();
   renderWbCompleteness();
   updateSortHeaders();
   const filter = wbTypeFilter.value;
@@ -1869,6 +1911,7 @@ function renderWbDocs() {
       : 'No documents found for this scope.';
     wbDocTbody.innerHTML = `<tr class="wb-empty-row"><td colspan="7">${msg}</td></tr>`;
     updateWbBulkBar();
+    _restoreWbEdit(pendingEdit);
     return;
   }
   wbDocTbody.innerHTML = '';
@@ -1893,12 +1936,14 @@ function renderWbDocs() {
     wbDocTbody.appendChild(tr);
   });
   updateWbBulkBar();
+  _restoreWbEdit(pendingEdit);
 }
 
-function _openWbEdit(tr, doc) {
+function _openWbEdit(tr, doc, restore = null) {
   // Build inline edit row, inserted immediately after the document row.
   const editTr = document.createElement('tr');
   editTr.className = 'wb-edit-row';
+  editTr.dataset.docId = doc.id;
 
   const typeOpts = _WB_DOC_TYPE_OPTIONS.map(([v, l]) =>
     `<option value="${v}"${v === doc.doc_type ? ' selected' : ''}>${l}</option>`
@@ -1949,7 +1994,42 @@ function _openWbEdit(tr, doc) {
 
   tr.after(editTr);
   tr.classList.add('wb-editing');
-  editTr.querySelector('.wb-edit-input').focus();
+
+  if (restore) {
+    // Scope first: the classification options depend on it, and a client or
+    // project scope drops the public option, so a classification restored
+    // before its scope would be discarded as an unknown value.
+    const scopeSel = editTr.querySelector('[data-field="scope"]');
+    if (restore.fields.scope != null && _hasOption(scopeSel, restore.fields.scope)) {
+      scopeSel.value = restore.fields.scope;
+      editTr.querySelector('[data-field="classification"]').innerHTML =
+        _buildClassOpts(scopeSel.value);
+    }
+    editTr.querySelectorAll('[data-field]').forEach(el => {
+      const field = el.dataset.field;
+      if (field === 'scope') return;
+      const value = restore.fields[field];
+      if (value == null) return;
+      if (el.tagName === 'SELECT' && !_hasOption(el, value)) return;
+      el.value = value;
+    });
+  }
+
+  // A repaint driven by a background poll must not pull focus out of whatever
+  // the operator is typing in elsewhere on the page, so only the field that
+  // held focus gets it back; a freshly opened form still starts on Filename.
+  if (!restore) {
+    editTr.querySelector('.wb-edit-input').focus();
+  } else if (restore.focusField) {
+    const focusEl = Array.from(editTr.querySelectorAll('[data-field]'))
+      .find(el => el.dataset.field === restore.focusField);
+    if (focusEl) {
+      focusEl.focus();
+      if (restore.selStart != null && focusEl.setSelectionRange) {
+        focusEl.setSelectionRange(restore.selStart, restore.selEnd);
+      }
+    }
+  }
 
   // When scope changes, rebuild classification options.
   editTr.querySelector('[data-field="scope"]').addEventListener('change', e => {
