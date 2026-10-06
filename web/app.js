@@ -1932,7 +1932,7 @@ function _openWbEdit(tr, doc) {
     ].join('');
   }
 
-  editTr.innerHTML = `<td colspan="6">
+  editTr.innerHTML = `<td colspan="7">
     <div class="wb-edit-form">
       <label class="wb-edit-label">Filename</label>
       <input class="wb-edit-input" data-field="filename" value="${_esc(doc.filename)}" />
