@@ -762,31 +762,71 @@ function renderConvList(convs) {
  * Replaces the current chat view with the conversation's message history,
  * marks the sidebar item as active, and fetches any chat-scoped documents.
  *
+ * Either the whole switch happens or none of it does, and a failure is always
+ * reported.  A fetch that never yields a conversation leaves the view on the
+ * previous one untouched; past that point ``currentConvId`` has already moved,
+ * so the sidebar highlight, chat-document list and system-prompt selector below
+ * must run for the pane to describe the same conversation a new message would be
+ * appended to.  Only the message render depends on message content, so it is
+ * guarded per message rather than being allowed to abort the switch.
+ *
  * @param {string} id - The ID of the conversation to load.
  * @return {Promise<void>}
  */
 async function loadConversation(id) {
+  let res;
   try {
-    const res = await fetch(`/api/conversations/${id}`);
-    if (!res.ok) return;
-    const conv = await res.json();
-    currentConvId = id;
-    setAgentUi(conv.model === 'agent', true);
-    chat.innerHTML = '';
-    for (const msg of conv.messages || []) {
-      const role = msg.role === 'assistant' ? 'ai' : 'user';
+    res = await fetch(`/api/conversations/${id}`);
+  } catch (err) {
+    showErrorBar(`Could not open conversation: ${err.message}`);
+    return;
+  }
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    showErrorBar(`Could not open conversation: ${detail}`);
+    return;
+  }
+  let conv;
+  try {
+    conv = await res.json();
+  } catch (_) {
+    showErrorBar('Could not open conversation: the server sent a malformed response.');
+    return;
+  }
+
+  currentConvId = id;
+  setAgentUi(conv.model === 'agent', true);
+  chat.innerHTML = '';
+  let unformatted = 0;
+  for (const msg of conv.messages || []) {
+    const role = msg.role === 'assistant' ? 'ai' : 'user';
+    try {
       createMessage(role, msg.content, role === 'ai' ? { modelTag: conv.model } : {});
+    } catch (_) {
+      // renderMarkdown needs marked and hljs, which load from CDNs and may be
+      // absent; createMessage appends nothing when it throws, so the message is
+      // re-added through its own error path, which uses textContent instead.
+      unformatted += 1;
+      createMessage(role, msg.content, { isError: true });
     }
-    setActiveConvItem(id);
-    setChatDocsVisible(true);
-    await fetchChatDocuments();
-    syncSpForConversation(conv);
-    if (chatDocList.children.length > 0) {
-      showCopyrightNotice();
-    } else {
-      input.focus();
-    }
-  } catch (_) {}
+  }
+  setActiveConvItem(id);
+  setChatDocsVisible(true);
+  await fetchChatDocuments();
+  syncSpForConversation(conv);
+  if (unformatted > 0) {
+    showErrorBar(
+      `${unformatted} message${unformatted === 1 ? '' : 's'} could not be formatted ` +
+      `and ${unformatted === 1 ? 'is' : 'are'} shown as unformatted text.`,
+      'warning',
+    );
+  }
+  if (chatDocList.children.length > 0) {
+    showCopyrightNotice();
+  } else {
+    input.focus();
+  }
 }
 
 /**
