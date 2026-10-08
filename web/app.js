@@ -40,7 +40,15 @@ let currentConvId = null;
 // and locked when a stored conversation loads (its model is 'agent').
 let agentMode = false;
 let abortController = null;
-let uploadInProgress = false;
+// Both upload paths — the sidebar attach and the Workbench batch — share the
+// fast GPU poll and suppress the model-status polls while they run, and either
+// can start while the other is still going. Counting the uploads in flight
+// releases both only when the last one finishes; arming the poll through
+// startGpuFastPoll() keeps a second start from orphaning the first interval,
+// which nothing could then reach (clearInterval of a lost handle is a silent
+// no-op, so the orphan would poll /api/gpu twice a second until the page
+// reloads).
+let uploadsInFlight = 0;
 let gpuFastInterval = null;
 
 // ── Helpers ────────────────────────────────────────────────────
@@ -949,6 +957,52 @@ function _makeDocItem(doc, onDelete) {
 }
 
 /**
+ * Arms the 500 ms GPU poll, replacing any poll already running.
+ *
+ * Clearing before assigning holds the "at most one fast poll" invariant however
+ * the two upload paths interleave, so callers arm without checking first.
+ *
+ * @return {void}
+ */
+function startGpuFastPoll() {
+  stopGpuFastPoll();
+  gpuFastInterval = setInterval(pollGpu, 500);
+}
+
+/**
+ * Stops the 500 ms GPU poll if one is running.
+ *
+ * @return {void}
+ */
+function stopGpuFastPoll() {
+  if (gpuFastInterval) {
+    clearInterval(gpuFastInterval);
+    gpuFastInterval = null;
+  }
+}
+
+/**
+ * Registers an upload as started, arming the fast GPU poll.
+ *
+ * @return {void}
+ */
+function beginUpload() {
+  uploadsInFlight++;
+  startGpuFastPoll();
+}
+
+/**
+ * Registers an upload as finished, stopping the fast GPU poll once the last
+ * concurrent upload is done.
+ *
+ * @return {void}
+ */
+function endUpload() {
+  uploadsInFlight = Math.max(0, uploadsInFlight - 1);
+  if (uploadsInFlight === 0) stopGpuFastPoll();
+}
+
+/**
  * Uploads a file to the API and refreshes the appropriate document list on completion.
  *
  * Shows an "Uploading…" placeholder in *listEl* during the upload, switches to
@@ -971,11 +1025,10 @@ async function _uploadDoc(file, listEl, conversationId) {
   placeholder.appendChild(pname);
   listEl.prepend(placeholder);
 
-  uploadInProgress = true;
+  beginUpload();
   modelDot.className = 'model-dot';
   modelDotLabel.textContent = 'Busy…';
   modelDotLabel.className = 'model-dot-label';
-  gpuFastInterval = setInterval(pollGpu, 500);
   setStatus(`Uploading ${file.name}…`, 'busy');
 
   try {
@@ -1008,9 +1061,7 @@ async function _uploadDoc(file, listEl, conversationId) {
   } catch (err) {
     setStatus(err.message, 'error');
   } finally {
-    uploadInProgress = false;
-    clearInterval(gpuFastInterval);
-    gpuFastInterval = null;
+    endUpload();
     placeholder.remove();
     if (conversationId) await fetchChatDocuments(conversationId);
     await Promise.all([pollModelStatus(), pollAnalysisModelStatus()]);
@@ -1468,7 +1519,7 @@ function setStatus(msg, level = 'info') {
 async function pollModelStatus() {
   const model = modelSel.value;
   if (!model) return;
-  if (uploadInProgress) return;
+  if (uploadsInFlight > 0) return;
   try {
     const res = await fetch(`/api/model-status?model=${encodeURIComponent(model)}`);
     if (!res.ok) return;
@@ -1553,7 +1604,7 @@ async function _prependMerllmDefault(existingModels) {
 async function pollAnalysisModelStatus() {
   const model = analysisSel.value;
   if (!model) return;
-  if (uploadInProgress) return;
+  if (uploadsInFlight > 0) return;
   try {
     const res = await fetch(`/api/model-status?model=${encodeURIComponent(model)}`);
     if (!res.ok) return;
@@ -2330,8 +2381,7 @@ wbDocUpload.addEventListener('change', async () => {
   let   done    = 0;
   let   failed  = 0;
 
-  uploadInProgress = true;
-  gpuFastInterval = setInterval(pollGpu, 500);
+  beginUpload();
 
   for (let i = 0; i < files.length; i++) {
     const file   = files[i];
@@ -2373,9 +2423,7 @@ wbDocUpload.addEventListener('change', async () => {
     }
   }
 
-  uploadInProgress = false;
-  clearInterval(gpuFastInterval);
-  gpuFastInterval = null;
+  endUpload();
 
   await loadWbDocs();
   await Promise.all([pollModelStatus(), pollAnalysisModelStatus()]);
