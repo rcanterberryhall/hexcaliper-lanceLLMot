@@ -61,6 +61,7 @@ No data leaves your machine unless you explicitly approve it.
 - **Document attribute editing** — after upload, click the ✎ button on any document to edit its filename, doc type, and classification inline
 - **Bulk attribute editing** — select multiple documents with the row checkboxes (or the header checkbox to toggle everything currently shown) and apply doc type, scope, and classification to all of them in one step; any field left at "Keep current" is unchanged per-document
 - **Scope hierarchy** — global, client, project, and session scopes; project view inherits all parent-scope documents
+- **Project completeness grid** — a project scope shows a badge per document type with the count it holds, and flags the five safety-critical types (THEOP, FMEA, hazard analysis, FAT, SAT) when the project has none; if the document list fails to load the grid states that it cannot count rather than reporting absence, and the table says the request failed instead of reporting an empty scope
 
 ### System
 - **Live GPU meter** — real-time utilisation and VRAM per card via NVML (dual P40 supported)
