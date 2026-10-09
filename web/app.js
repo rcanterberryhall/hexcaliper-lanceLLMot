@@ -1686,6 +1686,17 @@ const wbAddClientBtn   = document.getElementById('wb-add-client-btn');
 let wbClients     = [];
 let wbAllProjects = [];
 let wbDocs        = [];
+// The scope wbDocs was actually loaded for, and { scope, reason } for the last
+// load that failed (null when it succeeded). The completeness grid makes a
+// per-type claim about one project's documents, so it has to know both whether
+// the documents it is holding are that project's and whether they arrived at
+// all — an empty array alone cannot tell an empty scope from a 500.
+let wbDocsScope   = null;
+let wbDocsError   = null;
+// Incremented once per load. A scope click highlights the clicked row and
+// relabels the upload target before any document arrives, so a load that has
+// since been overtaken must not render over its successor.
+let _wbDocsSeq    = 0;
 // Active scope: { type: 'global'|'client'|'project', clientId, projectId, label }
 let wbScope = { type: 'global', clientId: null, projectId: null, label: 'Global' };
 let wbSortKey = null;
@@ -1762,16 +1773,60 @@ async function setWbScope(scope) {
   await loadWbDocs();
 }
 
+// Returns true when this load rendered, false when it was overtaken — the
+// scope is captured at entry rather than re-read after the await, because the
+// rail moves on while the request is in flight and this load describes the
+// scope it was issued for.
 async function loadWbDocs() {
+  const scope = wbScope;
+  const seq   = ++_wbDocsSeq;
   const params = new URLSearchParams();
-  if (wbScope.type === 'project' && wbScope.projectId) params.set('project_id', wbScope.projectId);
-  else if (wbScope.type === 'client' && wbScope.clientId) params.set('client_id', wbScope.clientId);
+  if (scope.type === 'project' && scope.projectId) params.set('project_id', scope.projectId);
+  else if (scope.type === 'client' && scope.clientId) params.set('client_id', scope.clientId);
   // global: no params → returns global-scoped docs only
+  let docs  = null;
+  let error = null;
   try {
     const res = await fetch(`/api/documents?${params}`);
-    wbDocs = res.ok ? await res.json() : [];
-  } catch { wbDocs = []; }
-  renderWbDocs();
+    if (res.ok) docs = await res.json();
+    else error = `HTTP ${res.status}`;
+  } catch (err) {
+    error = err.message || 'network error';
+  }
+  if (!error && !Array.isArray(docs)) error = 'malformed document list';
+  if (seq !== _wbDocsSeq) return false;
+  wbDocs      = error ? [] : docs;
+  wbDocsScope = error ? null : scope;
+  wbDocsError = error ? { scope, reason: error } : null;
+  paintWbDocsPane();
+  return true;
+}
+
+// The one way the document pane is repainted. Routing the filter and sort
+// handlers through here as well is what stops a repaint from replacing a stated
+// load failure with the rows of whichever scope was last loaded successfully.
+function paintWbDocsPane() {
+  if (wbDocsError) renderWbDocsUnavailable();
+  else renderWbDocs();
+}
+
+// A load failure resolves the pane rather than leaving the previous scope's
+// rows on it, and says which it is: the empty-state row below would otherwise
+// report the scope empty on the strength of a request that never answered.
+function renderWbDocsUnavailable() {
+  renderWbCompleteness();
+  wbSelectedIds.clear();
+  wbDocTbody.innerHTML = `<tr class="wb-empty-row wb-error-row"><td colspan="7">`
+    + `Could not load the documents for ${_esc(wbDocsError.scope.label)} — ${_esc(wbDocsError.reason)}. `
+    + `This is a failed request, not an empty scope. `
+    + `<button class="wb-retry-btn" type="button">Retry</button></td></tr>`;
+  wbDocTbody.querySelector('.wb-retry-btn').addEventListener('click', () => loadWbDocs());
+  updateWbBulkBar();
+}
+
+function _sameWbScope(a, b) {
+  return !!a && !!b && a.type === b.type
+      && a.clientId === b.clientId && a.projectId === b.projectId;
 }
 
 // Doc-type options shared between the upload selector and the inline edit form.
@@ -1810,6 +1865,20 @@ function renderWbCompleteness() {
   if (!el) return;
   if (wbScope.type !== 'project') { el.hidden = true; return; }
   el.hidden = false;
+  // Every badge here is a claim about what this project does or does not hold,
+  // and a zero count reds out the five safety-critical types. A failed load
+  // counts zero of everything, and a load still in flight counts the previous
+  // project's documents under this project's label — so the grid states that it
+  // has nothing to count instead.
+  const failure = wbDocsError && _sameWbScope(wbDocsError.scope, wbScope) ? wbDocsError : null;
+  if (failure || !_sameWbScope(wbDocsScope, wbScope)) {
+    el.innerHTML = `<span class="wb-completeness-note">`
+      + (failure
+          ? `Document inventory unavailable — ${_esc(failure.reason)}`
+          : 'Loading document inventory…')
+      + `</span>`;
+    return;
+  }
   const counts = {};
   for (const d of wbDocs) counts[d.doc_type] = (counts[d.doc_type] || 0) + 1;
   el.innerHTML = _WB_ALL_COMPLETENESS_TYPES.map(t => {
@@ -2099,7 +2168,7 @@ wbDocTbody.addEventListener('click', async e => {
   else showErrorBar('Failed to delete document.');
 });
 
-wbTypeFilter.addEventListener('change', renderWbDocs);
+wbTypeFilter.addEventListener('change', paintWbDocsPane);
 
 document.querySelector('.wb-table thead').addEventListener('click', e => {
   const th = e.target.closest('th.sortable');
@@ -2107,7 +2176,7 @@ document.querySelector('.wb-table thead').addEventListener('click', e => {
   const key = th.dataset.sortKey;
   if (wbSortKey === key) wbSortAsc = !wbSortAsc;
   else { wbSortKey = key; wbSortAsc = true; }
-  renderWbDocs();
+  paintWbDocsPane();
 });
 
 // ── Bulk selection + edit ─────────────────────────────────────

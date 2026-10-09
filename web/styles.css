@@ -1874,6 +1874,30 @@ tr.wb-editing td { opacity: 0.5; }
   text-align: center;
 }
 
+.wb-completeness-note {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-style: italic;
+}
+
+/* ── Failed document load ──────────────────────────────────── */
+.wb-empty-row.wb-error-row td {
+  color: #f87171;
+  font-style: normal;
+}
+.wb-retry-btn {
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.75rem;
+  margin-left: 6px;
+  padding: 2px 8px;
+  transition: color 0.15s, border-color 0.15s;
+}
+.wb-retry-btn:hover { color: var(--gold); border-color: var(--gold); }
+
 /* ── Download button in workbench table ────────────────────── */
 .wb-download-btn {
   background: none;
