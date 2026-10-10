@@ -623,12 +623,39 @@ function removeThinking() {
   if (el) el.remove();
 }
 
+// ── API failure reporting ────────────────────────────────────
+/**
+ * Extracts a human-readable reason from a response that was not ``ok``.
+ *
+ * Prefers FastAPI's ``detail`` field, which the conversation and document
+ * endpoints always set — ``"Conversation not found."`` for a conversation
+ * deleted in another tab, ``"Access denied."`` when it belongs to another
+ * Cloudflare Access identity — and falls back to the status code when the body
+ * is missing or is not JSON (an nginx 502 sends HTML).
+ *
+ * @param {Response} res - A response whose ``ok`` is ``false``.
+ * @return {Promise<string>} The reason to show the operator.
+ */
+async function _failureDetail(res) {
+  try {
+    return (await res.json()).detail || `HTTP ${res.status}`;
+  } catch (_) {
+    return `HTTP ${res.status}`;
+  }
+}
+
 // ── Conversations ────────────────────────────────────────────
 /**
  * Activates an inline rename editor on a conversation sidebar item.
  *
  * Replaces the title ``<span>`` with a text ``<input>``, commits on Enter or
  * blur, cancels on Escape.  Calls ``PATCH /api/conversations/{id}`` on commit.
+ *
+ * The title on screen is written only once the server has accepted the rename.
+ * Writing it first made a refused rename — 404 once the conversation was
+ * deleted in another tab, 403, or a 502 from a restarting backend — look
+ * identical to a successful one until the next ``fetchConversations()`` put the
+ * old title back, at an unrelated moment minutes later (issue #72).
  *
  * @param {HTMLElement} titleEl - The ``.conv-item-title`` span to replace.
  * @param {string} convId - The conversation ID to rename.
@@ -643,23 +670,53 @@ function startRenameConv(titleEl, convId) {
   input.focus();
   input.select();
 
+  // Enter, Escape and blur can each end the edit, and `commit` awaits a request
+  // in between, so without this latch a blur arriving during the PATCH sends a
+  // second one — and whether removing a focused input fires `blur` at all is
+  // engine-dependent, which would otherwise decide whether Escape cancels or
+  // saves.  One outcome per editor, whichever event gets there first.
+  let settled = false;
+
+  function close() {
+    settled = true;
+    input.replaceWith(titleEl);
+  }
+
   async function commit() {
+    if (settled) return;
     const newTitle = input.value.trim();
-    if (newTitle && newTitle !== prev) {
-      await fetch(`/api/conversations/${convId}`, {
+    if (!newTitle || newTitle === prev) {
+      close();
+      return;
+    }
+    settled = true;
+    let res;
+    try {
+      res = await fetch(`/api/conversations/${convId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ title: newTitle }),
-      }).catch(() => {});
-      titleEl.textContent = newTitle;
-      titleEl.title = newTitle;
+      });
+    } catch (err) {
+      // The attempted title goes in the message: the editor is gone and the
+      // span is back to `prev`, so this is the only place it survives.
+      showErrorBar(`Could not rename "${prev}" to "${newTitle}": ${err.message}`);
+      close();
+      return;
     }
-    input.replaceWith(titleEl);
+    if (!res.ok) {
+      showErrorBar(`Could not rename "${prev}" to "${newTitle}": ${await _failureDetail(res)}`);
+      close();
+      return;
+    }
+    titleEl.textContent = newTitle;
+    titleEl.title = newTitle;
+    close();
   }
 
   input.addEventListener('keydown', (e) => {
     if (e.key === 'Enter')  { e.preventDefault(); commit(); }
-    if (e.key === 'Escape') { input.replaceWith(titleEl); }
+    if (e.key === 'Escape') { close(); }
   });
   input.addEventListener('blur', commit);
 }
@@ -683,17 +740,33 @@ function setActiveConvItem(id) {
 /**
  * Fetches the conversation list from the API and renders it in the sidebar.
  *
- * Silently swallows network and HTTP errors so a transient backend hiccup
- * does not crash the UI.
+ * A failure leaves the list that is already on screen alone — a stale list is
+ * more use than none — but says so at ``warning`` level rather than swallowing
+ * it.  This is also the refresh that reveals a rename the server refused, so
+ * failing quietly here hid one failure behind another (issue #72).
  *
  * @return {Promise<void>}
  */
 async function fetchConversations() {
+  let res;
   try {
-    const res = await fetch('/api/conversations');
-    if (!res.ok) return;
-    renderConvList(await res.json());
-  } catch (_) {}
+    res = await fetch('/api/conversations');
+  } catch (err) {
+    showErrorBar(`Could not refresh the conversation list: ${err.message}`, 'warning');
+    return;
+  }
+  if (!res.ok) {
+    showErrorBar(`Could not refresh the conversation list: ${await _failureDetail(res)}`, 'warning');
+    return;
+  }
+  let convs;
+  try {
+    convs = await res.json();
+  } catch (_) {
+    showErrorBar('Could not refresh the conversation list: the server sent a malformed response.', 'warning');
+    return;
+  }
+  renderConvList(convs);
 }
 
 /**
@@ -795,17 +868,33 @@ async function loadConversation(id) {
  * If the deleted conversation is the currently active one, resets to a new
  * blank chat via {@link newChat}.
  *
+ * A refusal is reported rather than skipped.  With no ``else`` on the success
+ * check and the throw swallowed, a 404, 403 or 502 left the row where it was
+ * and said nothing, so pressing ✕ was indistinguishable from not pressing it
+ * (issue #72).
+ *
  * @param {string} id - The ID of the conversation to delete.
  * @return {Promise<void>}
  */
 async function deleteConversation(id) {
+  let res;
   try {
-    const res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
-    if (res.status === 204 || res.ok) {
-      if (currentConvId === id) newChat();
-      await fetchConversations();
-    }
-  } catch (_) {}
+    res = await fetch(`/api/conversations/${id}`, { method: 'DELETE' });
+  } catch (err) {
+    showErrorBar(`Could not delete conversation: ${err.message}`);
+    return;
+  }
+  if (res.status === 204 || res.ok) {
+    if (currentConvId === id) newChat();
+    await fetchConversations();
+    setStatus('Conversation deleted.', 'info');
+    return;
+  }
+  showErrorBar(`Could not delete conversation: ${await _failureDetail(res)}`);
+  // A 404 means the row is already gone server-side — it was deleted in
+  // another tab, or an earlier ✕ succeeded and this is the second click.  The
+  // refresh is what takes the stale row off screen, so it still has to happen.
+  if (res.status === 404) await fetchConversations();
 }
 
 // ── Copyright acknowledgement ─────────────────────────────────
@@ -1040,18 +1129,41 @@ function setChatDocsVisible(visible) {
  * Also ensures the chat-docs section becomes visible if any documents are
  * returned.  A no-op when *convId* is falsy.
  *
+ * A failure empties the rail and reports why, because the alternative is worse
+ * than a blank: returning early left the *previous* conversation's documents
+ * listed under the newly-opened one, with ✕ buttons that deleted them, and
+ * {@link loadConversation} then read that stale list to decide whether to raise
+ * the copyright gate — so a conversation with no documents was gated on another
+ * conversation's (issue #72).
+ *
  * @param {string} [convId=currentConvId] - The conversation ID to fetch documents for.
  * @return {Promise<void>}
  */
 async function fetchChatDocuments(convId = currentConvId) {
   if (!convId) return;
+  let res;
   try {
-    const res = await fetch(`/api/documents?conversation_id=${convId}`);
-    if (!res.ok) return;
-    const docs = await res.json();
-    renderChatDocList(docs);
-    if (docs.length > 0) setChatDocsVisible(true);
-  } catch (_) {}
+    res = await fetch(`/api/documents?conversation_id=${convId}`);
+  } catch (err) {
+    renderChatDocList([]);
+    showErrorBar(`Could not load this conversation's documents: ${err.message}`);
+    return;
+  }
+  if (!res.ok) {
+    renderChatDocList([]);
+    showErrorBar(`Could not load this conversation's documents: ${await _failureDetail(res)}`);
+    return;
+  }
+  let docs;
+  try {
+    docs = await res.json();
+  } catch (_) {
+    renderChatDocList([]);
+    showErrorBar("Could not load this conversation's documents: the server sent a malformed response.");
+    return;
+  }
+  renderChatDocList(docs);
+  if (docs.length > 0) setChatDocsVisible(true);
 }
 
 /**
@@ -1059,6 +1171,12 @@ async function fetchChatDocuments(convId = currentConvId) {
  *
  * Clears the existing list and rebuilds it.  Each item's delete button
  * removes the document via the API and refreshes the list.
+ *
+ * The delete reports its own outcome.  ``_makeDocItem`` has already made the
+ * operator confirm a *permanent* removal from the knowledge graph, and the
+ * unchecked ``fetch`` meant a 403 or 502 simply re-rendered the document, so ✕
+ * read as inert — while the identical call in the Workbench already reported it
+ * (issue #72).
  *
  * @param {Array<{id: string, filename: string, chunk_count: number}>} docs - Documents
  *   scoped to the current conversation.
@@ -1069,7 +1187,20 @@ function renderChatDocList(docs) {
   for (const doc of docs) {
     const convId = currentConvId;
     chatDocList.appendChild(_makeDocItem(doc, async () => {
-      await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
+      let res;
+      try {
+        res = await fetch(`/api/documents/${doc.id}`, { method: 'DELETE' });
+      } catch (err) {
+        showErrorBar(`Could not delete "${doc.filename}": ${err.message}`);
+        return;
+      }
+      if (res.ok || res.status === 204) {
+        setStatus(`✓ ${doc.filename} deleted`, 'info');
+      } else {
+        showErrorBar(`Could not delete "${doc.filename}": ${await _failureDetail(res)}`);
+      }
+      // Refreshed either way: on success to drop the row, on a refusal to show
+      // the document is still there, with the bar saying why it survived.
       await fetchChatDocuments(convId);
     }));
   }
