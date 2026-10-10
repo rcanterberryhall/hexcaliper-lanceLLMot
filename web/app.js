@@ -2651,6 +2651,10 @@ const spDeleteBtn   = document.getElementById('sp-delete-btn');
 
 let _systemPrompts  = [];  // cached list from API
 let _editingSpId    = null; // null = creating new, number = editing existing
+// The value the conversation is known to carry, as last set from a server
+// answer. A <select> moves to the operator's choice on its own, so this is the
+// only record of what to go back to when an assignment is refused.
+let _appliedSpValue = '';
 
 async function fetchSystemPrompts() {
   try {
@@ -2677,22 +2681,86 @@ function renderSpSelect() {
   spEditBtn.disabled = !spSelect.value;
 }
 
-async function applySpToConversation(spId) {
-  if (!currentConvId) return;
+/**
+ * Puts the system-prompt selector back to *value* and resyncs the Edit
+ * button, so the dropdown goes on describing the conversation after a
+ * selection the server did not accept.
+ *
+ * @param {string} value - Select value to restore.
+ * @return {void}
+ */
+function _revertSpSelect(value) {
+  spSelect.value = value;
+  spEditBtn.disabled = !spSelect.value;
+}
+
+/**
+ * Assigns a saved system prompt to the current conversation, or clears the
+ * assignment when *spId* is null.
+ *
+ * The conversation's ``system_prompt_id`` is what every later reply is built
+ * from — ``routers/chat.py`` prepends the saved prompt's content as the
+ * ``system`` message and prefers it over the free-text box — so the dropdown
+ * names the model's standing instructions rather than a preference. A
+ * ``<select>`` holds the operator's choice without any help from this
+ * function, which means a refusal has to be undone explicitly or the dropdown
+ * is left claiming an assignment the conversation does not have.
+ *
+ * @param {number|null} spId - Saved prompt id, or null to clear the assignment.
+ * @param {string} [prevValue=''] - Select value to restore if the assignment
+ *   does not land.
+ * @return {Promise<boolean>} True once the server has confirmed the assignment.
+ */
+async function applySpToConversation(spId, prevValue = '') {
+  if (!currentConvId) {
+    // Nothing to attach to yet, and the send path carries only the free-text
+    // prompt — so accepting the selection here would promise what no request
+    // delivers.
+    _revertSpSelect(prevValue);
+    setStatus('Send a message first — a saved system prompt attaches to a conversation that exists.', 'warning');
+    return false;
+  }
+
+  let res;
   try {
-    await fetch(`/api/conversations/${currentConvId}/system-prompt`, {
+    res = await fetch(`/api/conversations/${currentConvId}/system-prompt`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ system_prompt_id: spId || null }),
     });
-    await fetchConversations();
-  } catch (_) {}
+  } catch (_) {
+    _revertSpSelect(prevValue);
+    showErrorBar('Could not apply the system prompt — network error.');
+    return false;
+  }
+
+  if (!res.ok) {
+    let detail = `HTTP ${res.status}`;
+    try { detail = (await res.json()).detail || detail; } catch (_) {}
+    _revertSpSelect(prevValue);
+    showErrorBar(`Could not apply the system prompt: ${detail}`);
+    return false;
+  }
+
+  // Confirmed. Recorded before the sidebar refresh, whose own failure is
+  // reported by fetchConversations and must not read as a refused assignment.
+  _appliedSpValue = spSelect.value;
+  clearErrorBar();
+  const applied = _systemPrompts.find(s => String(s.id) === String(spId));
+  setStatus(spId
+    ? `System prompt "${applied?.name || spId}" applied to this conversation.`
+    : 'System prompt cleared for this conversation.', 'info');
+  await fetchConversations();
+  return true;
 }
 
 spSelect.addEventListener('change', async () => {
+  // `change` fires with the new value already in place, so the value being
+  // replaced comes from _appliedSpValue rather than from the element.
+  const prevValue = _appliedSpValue;
   spEditBtn.disabled = !spSelect.value;
   const spId = spSelect.value ? parseInt(spSelect.value, 10) : null;
-  await applySpToConversation(spId);
+  await applySpToConversation(spId, prevValue);
 });
 
 spEditBtn.addEventListener('click', () => {
@@ -2750,7 +2818,7 @@ spSaveBtn.addEventListener('click', async () => {
       spEditBtn.disabled = !spSelect.value;
       setStatus(`System prompt "${name}" saved.`, 'info');
       if (!_editingSpId) {
-        await applySpToConversation(saved.id);
+        await applySpToConversation(saved.id, _appliedSpValue);
       }
     } else {
       const err = await res.json().catch(() => ({}));
@@ -2788,11 +2856,13 @@ function syncSpForConversation(conv) {
   if (!conv) {
     spSelect.value = '';
     spEditBtn.disabled = true;
+    _appliedSpValue = '';
     return;
   }
   const spId = conv.system_prompt_id;
   spSelect.value = spId ? String(spId) : '';
   spEditBtn.disabled = !spSelect.value;
+  _appliedSpValue = spSelect.value;
 }
 
 // ── Conversation export ────────────────────────────────────────
