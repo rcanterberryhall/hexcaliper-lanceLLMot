@@ -15,7 +15,7 @@ No data leaves your machine unless you explicitly approve it.
 - **Multi-model chat** — switch between any model pulled into your local Ollama instance
 - **GraphRAG** — documents are indexed into a concept graph; retrieval uses both vector similarity and graph traversal for richer context
 - **Retrieval attribution** — after each response, a collapsible "Sources" section shows which documents, chunk snippets, relevance scores, and graph nodes informed the answer; "No documents matched" is shown explicitly when RAG returned zero results
-- **Active scope indicator** — a persistent badge in the chat header shows the current scope (Global / Client / Project / Session), the document count, and a warning when the scope is empty
+- **Active scope indicator** — a persistent badge in the chat header shows the current scope (Global / Client / Project / Session), the document count, and a warning when the scope is empty; if the count cannot be fetched it reads `? docs` with the reason in its tooltip rather than reporting zero documents
 - **Scoped documents** — global, client, project, or session scope; each conversation only sees what it should
 - **Library-to-conversation bridge** — attach technical library documents directly to the active conversation from the library browser; reciprocally, browse the library from within a chat session
 - **Document summaries** — every uploaded document gets a model-generated summary injected into every chat so the model always knows what exists
