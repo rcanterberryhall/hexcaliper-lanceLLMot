@@ -1774,7 +1774,8 @@ async function loadWbDocs() {
   renderWbDocs();
 }
 
-// Doc-type options shared between the upload selector and the inline edit form.
+// Doc-type options shared between the filter, the upload selector and the
+// inline edit form.
 const _WB_DOC_TYPE_OPTIONS = [
   ['standard','Standard'], ['requirement','Requirement'], ['theop','THEOP'],
   ['fmea','FMEA'], ['hazard_analysis','Hazard Analysis'], ['fat','FAT'],
@@ -1784,13 +1785,23 @@ const _WB_DOC_TYPE_OPTIONS = [
   ['app_note','App Note'], ['misc','Misc'],
 ];
 
-_WB_DOC_TYPE_OPTIONS.forEach(([v, l]) => {
-  const opt = document.createElement('option');
-  opt.value = v;
-  opt.textContent = l;
-  if (v === 'misc') opt.selected = true;
-  wbUploadType.appendChild(opt);
-});
+// Both selectors are filled from the shared list, so a type added to the
+// vocabulary reaches each of them at once — issue #78, where the filter's
+// hand-written markup had drifted four types behind the upload selector and
+// the tech-library types could not be filtered at all.
+function _appendWbTypeOptions(select, selectedValue) {
+  _WB_DOC_TYPE_OPTIONS.forEach(([v, l]) => {
+    const opt = document.createElement('option');
+    opt.value = v;
+    opt.textContent = l;
+    if (v === selectedValue) opt.selected = true;
+    select.appendChild(opt);
+  });
+}
+
+_appendWbTypeOptions(wbUploadType, 'misc');
+// The filter's "All types" entry is in the markup and stays selected.
+_appendWbTypeOptions(wbTypeFilter, null);
 
 const _WB_SAFETY_CRITICAL_TYPES = ['theop', 'fmea', 'hazard_analysis', 'fat', 'sat'];
 const _WB_ALL_COMPLETENESS_TYPES = [
