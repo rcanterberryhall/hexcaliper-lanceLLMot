@@ -366,7 +366,7 @@
               <tr><td>Global row</td><td>Select to view all global-scope documents (ISO/IEC standards, shared references).</td></tr>
               <tr><td>Client row</td><td>Select to view documents for that client (contracts, client requirements).</td></tr>
               <tr><td>Project row</td><td>Select to view all documents in scope for that project: global + client + project-specific.</td></tr>
-              <tr><td>Completeness grid</td><td>Shown only when a project is selected. Green = present; red = safety-critical doc missing (THEOP, FMEA, HA, FAT, SAT); grey = non-critical absent.</td></tr>
+              <tr><td>Completeness grid</td><td>Shown only when a project is selected, and counts only documents scoped to that project. Green = present; red = safety-critical doc missing (THEOP, FMEA, HA, FAT, SAT); grey = non-critical absent. A dashed <strong>+n</strong> means n documents of that type are visible from the global library or the parent client: they are listed in the table below and can be retrieved in chat, but they are not this project's deliverable, so they never turn a badge green.</td></tr>
               <tr><td>Type filter</td><td>Filter the document list by document type.</td></tr>
               <tr><td>Column header (click)</td><td>Sort the document table by that column. Click again to reverse direction.</td></tr>
               <tr><td>Upload as / + Upload</td><td>Select document type and classification before uploading. Files are stored and embedded immediately but concept extraction is deferred — categorise them first, then click Index Documents. Classification is locked to Client (confidential) for client- and project-scoped uploads.</td></tr>
