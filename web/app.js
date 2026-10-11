@@ -1810,15 +1810,38 @@ function renderWbCompleteness() {
   if (!el) return;
   if (wbScope.type !== 'project') { el.hidden = true; return; }
   el.hidden = false;
-  const counts = {};
-  for (const d of wbDocs) counts[d.doc_type] = (counts[d.doc_type] || 0) + 1;
+  // `wbDocs` is what this scope can *see*, not what it holds: a project request
+  // to GET /api/documents unions the global library and the parent client's
+  // documents into the response (api/routers/documents.py:84-93), so a library
+  // FMEA template and a client-wide SAT both arrive here. Every badge below is
+  // a claim about what this project does or does not hold, so only a document
+  // scoped to this project may decide one. The wider scopes are still reported
+  // — they are listed in the table underneath — but as an inherited count
+  // beside a badge that stays red, never as the project's own.
+  const own       = {};
+  const inherited = {};
+  for (const d of wbDocs) {
+    const mine = d.scope_type === 'project' && d.scope_id === wbScope.projectId;
+    const bucket = mine ? own : inherited;
+    bucket[d.doc_type] = (bucket[d.doc_type] || 0) + 1;
+  }
   el.innerHTML = _WB_ALL_COMPLETENESS_TYPES.map(t => {
-    const count = counts[t] || 0;
+    const count     = own[t] || 0;
+    const elsewhere = inherited[t] || 0;
     const critical = _WB_SAFETY_CRITICAL_TYPES.includes(t);
     const cls = count > 0 ? 'present' : (critical ? 'critical missing' : 'missing');
     const abbrev = _WB_TYPE_ABBREV[t] || t;
-    return `<span class="wb-completeness-badge ${cls}" title="${t}: ${count} document(s)">`
-      + `${abbrev}${count > 0 ? ' <span class="cb-count">' + count + '</span>' : ''}</span>`;
+    const title = `${t}: `
+      + (count > 0 ? `${count} in this project` : 'none in this project')
+      + (elsewhere > 0 ? `; ${elsewhere} at global or client scope` : '');
+    return `<span class="wb-completeness-badge ${cls}" title="${title}">`
+      + `${abbrev}`
+      + (count > 0 ? ' <span class="cb-count">' + count + '</span>' : '')
+      + (count === 0 && elsewhere > 0
+          ? ' <span class="cb-inherited" aria-label="visible from a wider scope">+'
+            + elsewhere + '</span>'
+          : '')
+      + `</span>`;
   }).join('');
 }
 

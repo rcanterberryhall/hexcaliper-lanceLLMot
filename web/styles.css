@@ -1873,6 +1873,17 @@ tr.wb-editing td { opacity: 0.5; }
   min-width: 14px;
   text-align: center;
 }
+.wb-completeness-badge .cb-inherited {
+  font-size: 0.62rem;
+  font-weight: 500;
+  border: 1px dashed currentColor;
+  border-radius: 3px;
+  padding: 0 3px;
+  min-width: 14px;
+  text-align: center;
+  opacity: 0.75;
+}
+.wb-completeness-badge.missing .cb-inherited { opacity: 1; }
 
 /* ── Download button in workbench table ────────────────────── */
 .wb-download-btn {
