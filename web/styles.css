@@ -1165,6 +1165,13 @@ body { display: block; }
   font-size: 0.65rem;
 }
 
+/* The count could not be established (request refused or threw). Gold is the
+   app's attention colour, already used by .scope-warn, so a '?' reads as
+   something to look at rather than as a muted real count. */
+.scope-count.scope-count-error {
+  color: var(--gold);
+}
+
 .scope-warn-icon {
   color: var(--gold);
   font-size: 0.72rem;

@@ -75,7 +75,14 @@ function esc(value) {
  * Reads the active project from chatView.dataset (set when a workbench project
  * is opened in chat) and fetches the document count for that scope via the
  * /api/documents endpoint.
+ *
+ * The count is a claim about what this conversation can retrieve from, so it
+ * is only ever rendered as a number when a response actually carried one. A
+ * request that failed renders '?' and raises no empty-scope warning — that
+ * warning means the scope is empty, which a failure cannot establish.
  */
+let _scopeBadgeSeq = 0;
+
 async function updateScopeBadge() {
   if (!scopeBadge) return;
   const projectId   = document.getElementById('chat-view')?.dataset?.projectId;
@@ -90,18 +97,38 @@ async function updateScopeBadge() {
     queryParam = '';
   }
 
-  let count = '…';
+  // Claimed before the request so a scope change that happens while it is in
+  // flight can disown it. The project query is a superset of the global one
+  // (list_documents unions global + project + the parent client), so the two
+  // can land in either order and the loser must not paint the scope it was
+  // fired for over the scope now on screen.
+  const seq = ++_scopeBadgeSeq;
+
+  let count  = '…';
+  let reason = '';
   try {
-    const res  = await fetch(`/api/documents${queryParam}`);
-    const docs = res.ok ? await res.json() : [];
-    count = docs.length;
-  } catch (_) { count = '?'; }
+    const res = await fetch(`/api/documents${queryParam}`);
+    if (res.ok) {
+      count = (await res.json()).length;
+    } else {
+      const err = await res.json().catch(() => ({}));
+      count  = '?';
+      reason = err.detail || `HTTP ${res.status}`;
+    }
+  } catch (err) {
+    count  = '?';
+    reason = err.message || 'request failed';
+  }
+
+  if (seq !== _scopeBadgeSeq) return;
 
   const warn    = count === 0 && !!projectId;
+  const countCls = 'scope-count' + (reason ? ' scope-count-error' : '');
+  const countTtl = reason ? ` title="Document count unavailable — ${esc(reason)}"` : '';
   scopeBadge.className = 'scope-badge-pill' + (warn ? ' scope-warn' : '');
   scopeBadge.innerHTML =
     `<span class="scope-type">${esc(scopeLabel)}</span>` +
-    `<span class="scope-count">${count} doc${count !== 1 ? 's' : ''}</span>` +
+    `<span class="${countCls}"${countTtl}>${count} doc${count !== 1 ? 's' : ''}</span>` +
     (warn ? '<span class="scope-warn-icon" title="No documents in this scope">⚠</span>' : '');
 }
 
