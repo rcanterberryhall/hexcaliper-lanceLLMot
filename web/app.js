@@ -1489,6 +1489,75 @@ async function pollModelStatus() {
 }
 
 // ── Model list ───────────────────────────────────────────────
+
+// The chat selector needs no server write: modelSel.value travels in the body
+// of every /api/chat request, so it is true by construction. The analysis
+// selector is not — it sets config.ANALYSIS_MODEL in the API process, and a
+// <select> moves to the operator's choice natively, so the dropdown asserts a
+// switch whether or not the write landed. Everything below exists so it states
+// only what the server has confirmed.
+let _appliedAnalysisModel = null;
+
+/**
+ * POSTs an analysis-model selection, recording it only if the server took it.
+ *
+ * On success the confirmed model becomes the revert target and the value
+ * persisted to ``localStorage``; on refusal neither is touched, so a later
+ * reload restores the last model the server actually accepted.
+ *
+ * @param  {string} model  Model name to make the server's analysis model.
+ * @return {Promise<{ok: boolean, detail: string}>}
+ */
+async function _applyAnalysisModel(model) {
+  try {
+    const res = await fetch('/api/set-analysis-model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      return { ok: false, detail: err.detail || `HTTP ${res.status}` };
+    }
+    const data = await res.json().catch(() => ({}));
+    _appliedAnalysisModel = data.model || model;
+    localStorage.setItem('analysisModel', _appliedAnalysisModel);
+    return { ok: true, detail: '' };
+  } catch (err) {
+    return { ok: false, detail: err.message };
+  }
+}
+
+/**
+ * Puts the analysis selector back on the model the server is actually using.
+ *
+ * The replaced value cannot be read back off the element — a ``change`` event
+ * fires with the new value already in place — so the target is the last
+ * selection the server confirmed, falling back to ``/api/health``'s
+ * ``analysis_model`` when none has been (a refusal on the page-load notify).
+ *
+ * @return {Promise<string>}  Model the server is using, or '' if unknown.
+ */
+async function _revertAnalysisSelector() {
+  let model = _appliedAnalysisModel;
+  if (!model) {
+    try {
+      const res = await fetch('/api/health');
+      if (res.ok) model = ((await res.json()).analysis_model || '');
+    } catch (_) {
+      model = '';
+    }
+  }
+  if (!model) return '';
+  // A model Ollama no longer lists has no option to select; the error bar is
+  // then the only honest surface, so name it there either way.
+  if (Array.from(analysisSel.options).some(o => o.value === model)) {
+    analysisSel.value = model;
+    localStorage.setItem('analysisModel', model);
+  }
+  return model;
+}
+
 /**
  * Fetches the list of available Ollama models and populates the model selector.
  *
@@ -1519,13 +1588,21 @@ async function fetchModels() {
       if (name === savedAnalysis) optAnalysis.selected = true;
       analysisSel.appendChild(optAnalysis);
     }
-    // Notify the backend of the current analysis model selection.
+    // Notify the backend of the current analysis model selection. The restored
+    // dropdown is only true if this lands, so a refusal is reported and the
+    // selector falls back to the model the server is using. Deliberately not
+    // awaited: the model list is already on screen and must not wait on it.
     if (analysisSel.value) {
-      fetch('/api/set-analysis-model', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: analysisSel.value }),
-      }).catch(() => {});
+      const restored = analysisSel.value;
+      _applyAnalysisModel(restored).then(async result => {
+        if (result.ok) return;
+        const current = await _revertAnalysisSelector();
+        showErrorBar(
+          `Could not set the analysis model to ${restored}: ${result.detail}.` +
+          (current ? ` Still using ${current}.` : '')
+        );
+        pollAnalysisModelStatus();
+      });
     }
     // Prepend "merLLM default" option asynchronously (don't block model list)
     _prependMerllmDefault(models);
@@ -1575,14 +1652,14 @@ modelSel.addEventListener('change', () => {
 
 analysisSel.addEventListener('change', async () => {
   const model = analysisSel.value;
-  localStorage.setItem('analysisModel', model);
-  try {
-    await fetch('/api/set-analysis-model', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model }),
-    });
-  } catch (_) {}
+  const result = await _applyAnalysisModel(model);
+  if (!result.ok) {
+    const current = await _revertAnalysisSelector();
+    showErrorBar(
+      `Could not switch the analysis model to ${model}: ${result.detail}.` +
+      (current ? ` Still using ${current}.` : '')
+    );
+  }
   pollAnalysisModelStatus();
 });
 
