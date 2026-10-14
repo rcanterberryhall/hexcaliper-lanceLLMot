@@ -453,7 +453,7 @@
               <tr><td>Load</td><td>Pre-load the selected model into VRAM. Eliminates the cold-start delay on the first use.</td></tr>
               <tr><td>↻</td><td>Refresh the model list from Ollama. Also useful after pulling a new model with <code>ollama pull</code>.</td></tr>
             </table>
-            <div class="help-tip">For dual P40 GPUs, target 2× 30B Qwen or 1× 70B Qwen. Set <code>DEFAULT_MODEL</code> and <code>ANALYSIS_MODEL</code> in <code>docker-compose.yml</code> as defaults; override them live with the selectors above.</div>
+            <div class="help-tip">For dual P40 GPUs, target 2× 30B Qwen or 1× 70B Qwen. Set <code>DEFAULT_MODEL</code> and <code>ANALYSIS_MODEL</code> in <code>docker-compose.yml</code> as defaults; override them live with the selectors above. Setting <code>EXTRACT_MODEL</code> pins concept extraction to that model, leaving the Analysis selector to govern summarisation only.</div>
           </div>
 
           <div class="help-section">

@@ -22,7 +22,10 @@ Usage
 
 Configuration
 ─────────────
-    EXTRACT_MODEL  — Ollama model for extraction (defaults to DEFAULT_MODEL).
+    EXTRACT_MODEL  — Ollama model for extraction. Unset, it follows
+                     ANALYSIS_MODEL, which the header's Analysis selector
+                     reassigns at runtime; set it to pin extraction against
+                     that selector.
                      A 30B+ model is recommended for consistent JSON output.
     EXTRACT_TIMEOUT — HTTP timeout for extraction calls (default: 120 s).
 """
@@ -89,7 +92,17 @@ MAX_LEARNED_VOCAB = int(config._get("EXTRACT_MAX_LEARNED_VOCAB", "200"))
 
 
 def _extract_model() -> str:
-    return config.EXTRACT_MODEL
+    """Return an explicit ``EXTRACT_MODEL`` pin, else the live ``ANALYSIS_MODEL``.
+
+    Resolved per call, so the header's Analysis selector — which assigns
+    ``config.ANALYSIS_MODEL`` in place via POST /api/set-analysis-model —
+    governs extraction as the in-UI help row says it does, while an explicit
+    ``EXTRACT_MODEL`` remains a hard pin that the selector cannot override
+    (#83). ``extract_chunks_batch`` calls this once per document, before its
+    per-chunk fan-out, so a switch mid-ingest can change the model between
+    documents but never within one.
+    """
+    return config.EXTRACT_MODEL or config.ANALYSIS_MODEL
 
 
 # ── Seeded concept vocabulary ─────────────────────────────────────────────────

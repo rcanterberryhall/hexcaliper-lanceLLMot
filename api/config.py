@@ -29,9 +29,14 @@ EMBED_HEADERS = {"X-Source": "lancellmot"}
 MERLLM_URL      = _get("MERLLM_URL",      "http://host.docker.internal:11400")
 DEFAULT_MODEL   = _get("DEFAULT_MODEL", "qwen3:32b")
 ANALYSIS_MODEL  = _get("ANALYSIS_MODEL", "") or DEFAULT_MODEL
-# Model used for graph/concept extraction. Defaults to ANALYSIS_MODEL.
-# Set to a smaller model if you want extraction to run faster at lower quality.
-EXTRACT_MODEL   = _get("EXTRACT_MODEL", "") or ANALYSIS_MODEL
+# Model used for graph/concept extraction. Left empty it follows ANALYSIS_MODEL,
+# which POST /api/set-analysis-model reassigns while the process runs — so the
+# fallback is resolved per call in ``extractor._extract_model()`` rather than
+# bound here, where it would freeze whichever model started the process and the
+# Analysis selector could never reach extraction at all (#83).
+# Set it to pin extraction to one model regardless of that selector — e.g. a
+# smaller one to trade extraction quality for ingest speed.
+EXTRACT_MODEL   = _get("EXTRACT_MODEL", "")
 EMBED_MODEL     = _get("EMBED_MODEL", "nomic-embed-text")
 
 MAX_INPUT_CHARS = int(_get("MAX_INPUT_CHARS", "20000"))

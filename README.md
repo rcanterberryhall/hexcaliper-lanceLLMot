@@ -191,7 +191,8 @@ All tunables are set via environment variables in `docker-compose.yml`:
 | `OLLAMA_BASE_URL` | `http://host.docker.internal:11434` | Ollama API endpoint |
 | `DEFAULT_MODEL` | `llama3:8b` | Model selected on first load |
 | `EMBED_MODEL` | `nomic-embed-text` | Embedding model |
-| `EXTRACT_MODEL` | _(same as ANALYSIS_MODEL)_ | Model used for graph/concept extraction; set to a smaller model for faster extraction at lower quality |
+| `ANALYSIS_MODEL` | _(same as DEFAULT_MODEL)_ | Model used for document summarisation and concept extraction; the header's Analysis selector reassigns it at runtime, without a restart |
+| `EXTRACT_MODEL` | _(follows ANALYSIS_MODEL)_ | Pins graph/concept extraction to one model, which the Analysis selector then cannot override; set a smaller model to trade extraction quality for ingest speed |
 | `MAX_INPUT_CHARS` | `20000` | Max characters per user message |
 | `REQUEST_TIMEOUT_SECONDS` | `120` | Ollama request timeout |
 | `DB_PATH` | `/app/data/lancellmot.db` | SQLite database path |
