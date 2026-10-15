@@ -192,8 +192,11 @@ header img {
 .bubble.error { border-color: var(--error); color: var(--error); }
 
 /* An agent turn that ended without completing: the text is real but partial,
-   so the border is marked and the text left fully legible. */
-.bubble.incomplete { border-style: dashed; border-color: #c0392b; }
+   so the border is marked and the text left fully legible. Scoped under
+   .message.ai because `.message.ai .bubble` sets the `border` shorthand at
+   three classes, which out-specifies a two-class `.bubble.incomplete` and
+   paints over both the dash and the colour. */
+.message.ai .bubble.incomplete { border: 1px dashed #c0392b; }
 
 /* ── Markdown content inside AI bubbles ─────────────────────── */
 /* Paragraphs: add spacing between blocks but remove trailing margin on the last one. */
