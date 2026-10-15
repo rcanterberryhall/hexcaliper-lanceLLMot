@@ -1240,15 +1240,33 @@ form.addEventListener('submit', async (e) => {
       // Swap accumulated plain text for rendered markdown now that the stream is complete.
       // During streaming we used textContent (no flicker); render once on done.
       const rawText = bubble.textContent;
-      bubble.innerHTML = renderMarkdown(rawText);
-      addMeta(inner, doneData.model, doneData.sources);
-      addCopyBtn(inner, bubble);
-      if (!agentMode) {
-        // Escalation and deep analysis are plain-chat features keyed to
-        // the RAG context; an agent turn carries neither.
-        addEscalateBtn(inner, doneData.conversation_id, message, doneData.doc_ids || [], doneData.has_client_docs || false);
-        addDeepAnalysisBtn(inner, bubble, doneData.conversation_id, message);
+      if (incomplete) {
+        // done still arrives after agent_error, so this branch runs for a turn
+        // that ended without completing. What streamed is partial output, and
+        // an incomplete turn is presented as incomplete rather than as an
+        // answer (REQ-F-011): it keeps neither the model line nor the copy
+        // button, both of which mark a finished answer. A turn that streamed
+        // nothing at all leaves no empty bubble behind.
+        if (rawText.trim()) {
+          bubble.innerHTML = renderMarkdown(rawText);
+          bubble.classList.add('incomplete');
+        } else {
+          bubble.remove();
+        }
+      } else {
+        bubble.innerHTML = renderMarkdown(rawText);
+        addMeta(inner, doneData.model, doneData.sources);
+        addCopyBtn(inner, bubble);
+        if (!agentMode) {
+          // Escalation and deep analysis are plain-chat features keyed to
+          // the RAG context; an agent turn carries neither.
+          addEscalateBtn(inner, doneData.conversation_id, message, doneData.doc_ids || [], doneData.has_client_docs || false);
+          addDeepAnalysisBtn(inner, bubble, doneData.conversation_id, message);
+        }
       }
+      // Runs for a failed turn too: the backend persists it and returns its
+      // conversation_id, so skipping this would send the next message into a
+      // second conversation.
       if (!currentConvId) {
         currentConvId = doneData.conversation_id;
         if (agentMode) setAgentUi(true, true);  // mode fixed from turn one
