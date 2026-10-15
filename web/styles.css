@@ -189,7 +189,14 @@ header img {
   border-bottom-left-radius: 3px;
 }
 
-.bubble.error { border-color: var(--error); color: var(--error); }
+/* A bubble whose content is an error, not an answer. Scoped under .message.ai
+   — the context all three error paths build — because `.message.ai .bubble`
+   sets the `border` shorthand at three classes, which out-specifies a two-class
+   `.bubble.error` and paints over its border-color before source order is ever
+   consulted. `color` had no such competitor, so the state applied by halves:
+   red text inside the ordinary purple border. The longhand suffices here; the
+   width and style are unchanged and keep coming from the context rule. */
+.message.ai .bubble.error { border-color: var(--error); color: var(--error); }
 
 /* ── Markdown content inside AI bubbles ─────────────────────── */
 /* Paragraphs: add spacing between blocks but remove trailing margin on the last one. */
